@@ -1,0 +1,26 @@
+
+rules_version = '2';
+service cloud.firestore {
+ match /databases/{database}/documents {
+  match /players/{uid} {
+   allow read, delete: if request.auth != null && request.auth.uid == uid;
+   allow create, update: if request.auth != null && request.auth.uid == uid
+    && request.resource.data.keys().hasOnly(['progress','savedAt'])
+    && request.resource.data.savedAt is int
+    && request.resource.data.progress.keys().hasOnly(['coins','best','skin','sky','skins','skies','items'])
+    && request.resource.data.progress.coins is int
+    && request.resource.data.progress.coins >= 0
+    && request.resource.data.progress.coins <= 10000000
+    && request.resource.data.progress.best is int
+    && request.resource.data.progress.best >= 0
+    && request.resource.data.progress.skin in ['pip','mint','cosmo','berry']
+    && request.resource.data.progress.sky in ['auto','sunset','aurora','candy']
+    && request.resource.data.progress.skins is list
+    && request.resource.data.progress.skies is list
+    && request.resource.data.progress.items.keys().hasOnly(['rocket','life','spring'])
+    && request.resource.data.progress.items.rocket is int && request.resource.data.progress.items.rocket >= 0
+    && request.resource.data.progress.items.life is int && request.resource.data.progress.items.life >= 0
+    && request.resource.data.progress.items.spring is int && request.resource.data.progress.items.spring >= 0;
+  }
+ }
+}

@@ -1,0 +1,60 @@
+{
+  "rules": {
+    ".read": false,
+    ".write": false,
+    "rooms": {
+      "$room": {
+        ".read": "auth != null && (!data.exists() || data.child('createdAt').val() + 3600000 > now)",
+        ".write": "auth != null && ((!data.exists() && newData.child('host').val() === auth.uid) || (data.child('host').val() === auth.uid && !newData.exists()))",
+        ".validate": "newData.hasChildren(['host','seed','createdAt','players'])",
+        "host": {
+          ".validate": "newData.isString() && ((!data.exists() && newData.val() === auth.uid) || newData.val() === data.val())"
+        },
+        "seed": {
+          ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() < 2147483648 && (!data.exists() || newData.val() === data.val())"
+        },
+        "createdAt": {
+          ".validate": "newData.isNumber() && newData.val() <= now && (!data.exists() || newData.val() === data.val())"
+        },
+        "startAt": {
+          ".write": "auth != null && root.child('rooms').child($room).child('host').val() === auth.uid && !data.exists() && root.child('rooms').child($room).child('players').numChildren() >= 2",
+          ".validate": "newData.isNumber() && newData.val() <= now && newData.val() >= now-10000"
+        },
+        "players": {
+          ".validate": "newData.numChildren() <= 6",
+          "$uid": {
+            ".write": "auth != null && auth.uid === $uid && root.child('rooms').child($room).exists() && (data.exists() || (!root.child('rooms').child($room).child('startAt').exists() && root.child('rooms').child($room).child('players').numChildren() < 6))",
+            ".validate": "newData.hasChildren(['name','x','y','step','skin','status','updatedAt'])",
+            "name": {
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 16"
+            },
+            "x": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 420"
+            },
+            "y": {
+              ".validate": "newData.isNumber() && newData.val() >= -10000000 && newData.val() <= 100000"
+            },
+            "step": {
+              ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100000"
+            },
+            "skin": {
+              ".validate": "newData.val() === 'pip' || newData.val() === 'mint' || newData.val() === 'cosmo' || newData.val() === 'berry'"
+            },
+            "status": {
+              ".validate": "newData.val() === 'ready' || newData.val() === 'live' || newData.val() === 'out'"
+            },
+            "updatedAt": {
+              ".validate": "newData.isNumber() && newData.val() <= now"
+            },
+            "$other": {
+              ".validate": false
+            }
+          }
+        },
+        "$other": {
+          ".validate": false
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "project_info": {
+    "project_number": "827500673982",
+    "firebase_url": "https://cloud-hop-8732a-default-rtdb.firebaseio.com",
+    "project_id": "cloud-hop-8732a",
+    "storage_bucket": "cloud-hop-8732a.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:827500673982:android:a20425d066603a3f4097ef",
+        "android_client_info": {
+          "package_name": "com.cloudhop.cloud_hop"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "827500673982-6n0ol5nh9j0jl2j02at8o3ld4n98jska.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.cloudhop.cloud_hop",
+            "certificate_hash": "551273d052d53a4b387f65a2281e697cfd2607c8"
+          }
+        },
+        {
+          "client_id": "827500673982-dr14d22uu03resmv0jdvje3noh679kc2.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.cloudhop.cloud_hop",
+            "certificate_hash": "e87d2f17bd39273124b2895fde51a7f1881b838e"
+          }
+        },
+        {
+          "client_id": "827500673982-coi5phmlek75a6u28ndmv6q8369kcrfl.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCRcM2dV2KcTjtN6f08pdOVuUOTuitHZ_c"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "827500673982-coi5phmlek75a6u28ndmv6q8369kcrfl.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
