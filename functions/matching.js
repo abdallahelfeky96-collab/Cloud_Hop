@@ -1,5 +1,5 @@
 // Pure transaction reducer. Repeated polls cannot match a player twice.
-function matchQueue(input, uid, requestId, action, now, name) {
+function matchQueue(input, uid, requestId, action, now, name, mode = 'race', target = 100) {
   const state = structuredClone(input || {});
   for (const [id, item] of Object.entries(state)) {
     if (now - item.createdAt > 180000) delete state[id];
@@ -11,7 +11,7 @@ function matchQueue(input, uid, requestId, action, now, name) {
   }
   if (action === 'start' && (!own || own.requestId !== requestId)) {
     if (own && requestId.localeCompare(own.requestId) < 0) return state;
-    own = state[uid] = {requestId, name, createdAt: now, deadline: now + 5000, status: 'waiting'};
+    own = state[uid] = {requestId, name, mode, target, createdAt: now, deadline: now + 5000, status: 'waiting'};
   }
   if (!own || own.requestId !== requestId) return state;
   if (own.status === 'matched' || own.status === 'bot' || own.status === 'cancelled') return state;
@@ -19,12 +19,12 @@ function matchQueue(input, uid, requestId, action, now, name) {
     own.status = action === 'cancel' ? 'cancelled' : 'bot';
     return state;
   }
-  const opponent = Object.entries(state).find(([id, p]) => id !== uid && p.status === 'waiting' && p.deadline > now);
+  const opponent = Object.entries(state).find(([id, p]) => id !== uid && p.status === 'waiting' && p.deadline > now && p.mode === own.mode && (own.mode === 'arcade' || p.target === own.target));
   if (opponent) {
     const [otherId, other] = opponent;
     // The request UUID makes room collisions negligible and is never a client room code.
     const code = `M${[requestId, other.requestId].sort().join('').replace(/-/g, '')}`;
-    const match = {code, host: uid, createdAt: now, participants: {[uid]: name, [otherId]: other.name}};
+    const match = {code, mode: own.mode, target: own.target, host: uid, createdAt: now, participants: {[uid]: name, [otherId]: other.name}};
     own.status = other.status = 'matched';
     own.match = other.match = match;
   }

@@ -1,5 +1,8 @@
+import 'package:cloud_hop/ui/cartoon_controls.dart';
+
 import 'dart:io';
 import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -40,6 +43,10 @@ void main() {
       void noop() {}
       await tester.pumpWidget(
         MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(disableAnimations: true),
+            child: child!,
+          ),
           theme: ThemeData(
             useMaterial3: true,
             fontFamily: 'PreviewFont',
@@ -74,13 +81,37 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       expect(
-        tester.getCenter(find.byIcon(Icons.play_arrow_rounded)).dx,
+        tester
+            .getCenter(
+              find.byWidgetPredicate(
+                (w) =>
+                    w is CartoonButton &&
+                    w.art == artForIcon(Icons.play_arrow_rounded),
+              ),
+            )
+            .dx,
         closeTo(195, 1),
       );
-      final shop = tester.getCenter(find.byIcon(Icons.shopping_bag_rounded));
-      final friends = tester.getCenter(find.byIcon(Icons.people_alt_rounded));
+      final shop = tester.getCenter(
+        find.byWidgetPredicate(
+          (w) =>
+              w is CartoonButton &&
+              w.art == artForIcon(Icons.shopping_bag_rounded),
+        ),
+      );
+      final friends = tester.getCenter(
+        find.byWidgetPredicate(
+          (w) =>
+              w is CartoonButton &&
+              w.art == artForIcon(Icons.people_alt_rounded),
+        ),
+      );
       final reward = tester.getCenter(
-        find.byIcon(Icons.ondemand_video_rounded),
+        find.byWidgetPredicate(
+          (w) =>
+              w is CartoonButton &&
+              w.art == artForIcon(Icons.ondemand_video_rounded),
+        ),
       );
       expect(shop.dy, friends.dy);
       expect(friends.dy, reward.dy);
@@ -93,17 +124,34 @@ void main() {
                 .toImage();
         final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
         await Directory('preview').create();
-        await File(
-          'preview/${mode.name}.png',
-        ).writeAsBytes(bytes!.buffer.asUint8List());
+        await File('preview/${mode.name}.png')
+            .writeAsBytes(bytes!.buffer.asUint8List());
         image.dispose();
       });
       tester.view.physicalSize = const Size(320, 640);
       await tester.pumpAndSettle();
       expect(tester.takeException(), isNull);
       expect(
-        tester.getRect(find.byIcon(Icons.play_arrow_rounded)).bottom,
-        lessThan(tester.getRect(find.byIcon(Icons.shopping_bag_rounded)).top),
+        tester
+            .getRect(
+              find.byWidgetPredicate(
+                (w) =>
+                    w is CartoonButton &&
+                    w.art == artForIcon(Icons.play_arrow_rounded),
+              ),
+            )
+            .bottom,
+        lessThan(
+          tester
+              .getRect(
+                find.byWidgetPredicate(
+                  (w) =>
+                      w is CartoonButton &&
+                      w.art == artForIcon(Icons.shopping_bag_rounded),
+                ),
+              )
+              .top,
+        ),
       );
     });
   }

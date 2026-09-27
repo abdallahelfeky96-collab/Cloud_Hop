@@ -1,3 +1,6 @@
+const {setGlobalOptions} = require('firebase-functions/v2');
+// Keep callable deployments aligned with AppConfig.functionsRegion.
+setGlobalOptions({region: 'us-central1'});
 const {onCall, HttpsError} = require('firebase-functions/v2/https');
 const {defineSecret} = require('firebase-functions/params');
 const {initializeApp} = require('firebase-admin/app');
@@ -15,7 +18,7 @@ const pair = (a, b) => [a, b].sort().join('_');
 
 exports.profile = onCall(async r => {
   const uid = auth(r), name = clean(r.data.name, 16) || 'Pip';
-  await userRef(uid).set({name, country: clean(r.data.country, 40), city: clean(r.data.city, 40)}, {merge: true});
+  await userRef(uid).set({name, country: clean(r.data.country, 40), city: clean(r.data.city, 40), character: r.data.character === 'female' ? 'female' : 'male'}, {merge: true});
   return {id: uid};
 });
 
@@ -67,15 +70,18 @@ exports.matchmaking = onCall(async r => {
   const uid = auth(r), requestId = clean(r.data.requestId, 80), action = r.data.action;
   if (!/^[a-zA-Z0-9-]{16,80}$/.test(requestId) || !['start', 'poll', 'cancel'].includes(action)) throw new HttpsError('invalid-argument', 'Invalid search.');
   const name = (await userRef(uid).get()).data()?.name || 'Pip';
-  const result = await getDatabase().ref('matchQueue').transaction(state => matchQueue(state, uid, requestId, action, Date.now(), name));
+  const mode = r.data.mode === 'arcade' ? 'arcade' : 'race';
+  const target = Number.isInteger(r.data.target) && r.data.target >= 100 && r.data.target <= 1000 && r.data.target % 100 === 0 ? r.data.target : 100;
+  const result = await getDatabase().ref('matchQueue').transaction(state => matchQueue(state, uid, requestId, action, Date.now(), name, mode, target));
   const own = result.snapshot.child(uid).val();
   if (!own || own.requestId !== requestId) return {status: 'cancelled'};
   if (own.status !== 'matched') return {status: own.status};
   const match = own.match;
   await getDatabase().ref(`rooms/${match.code}`).transaction(existing => existing || {
+    mode: match.mode || 'race', target: match.target || 100,
     host: match.host, seed: parseInt(match.code.slice(1, 8), 16) % 2147483647 || 1,
     createdAt: match.createdAt, startAt: Date.now() + 2000,
-    players: Object.fromEntries(Object.entries(match.participants).map(([id, name]) => [id, {name, x: 210, y: 623, step: 0, skin: 'pip', status: 'ready', updatedAt: Date.now()}]))
+    players: Object.fromEntries(Object.entries(match.participants).map(([id, name]) => [id, {name, x: 210, y: 623, step: 0, skin: 'pip', character: 'male', lives: 2, status: 'ready', updatedAt: Date.now()}]))
   });
   return {status: 'matched', code: match.code};
 });
@@ -86,4 +92,31 @@ exports.voiceToken = onCall({secrets: [voiceKey, voiceSecret, voiceUrl]}, async 
   const room = (await getDatabase().ref(`rooms/${code}`).get()).val();
   if (!authorizeVoice(room, uid, Date.now())) throw new HttpsError('permission-denied', 'Join an active room first.');
   return {url: voiceUrl.value(), token: await makeVoiceToken(code, uid, room.players[uid].name, voiceKey.value(), voiceSecret.value())};
+});
+
+// Server settles once. Race uses the first server-stamped finish; Arcade uses survival.
+const {onValueWritten} = require('firebase-functions/v2/database');
+exports.settleRound = onValueWritten({ref: '/rooms/{code}/players/{uid}/status', region: 'us-central1', instance: 'cloud-hop-8732a-default-rtdb'}, async event => {
+  const ref = getDatabase().ref('rooms/' + event.params.code);
+  await ref.transaction(room => {
+    if (!room || room.result || !room.startAt || Date.now() < room.startAt + 3000) return;
+    // A fresh same-room rematch resets statuses; ignore the reset window so
+    // the previous round's fallout cannot settle the new round early.
+    if (room.rematch && Date.now() - room.rematch.startAt < 8000) return;
+    const players = Object.entries(room.players || {});
+    if (players.length < 2) return;
+    const finishers = players.filter(([,p]) => room.mode !== 'arcade' && p.step >= (room.target || 100) && p.finishedAt)
+      .sort((a,b) => a[1].finishedAt - b[1].finishedAt);
+    const alive = players.filter(([,p]) => p.status !== 'out');
+    let winner, reason;
+    if (finishers.length) {
+      const tied = finishers.length > 1 && finishers[0][1].finishedAt === finishers[1][1].finishedAt;
+      winner = tied ? '' : finishers[0][0]; reason = tied ? 'draw' : 'finish';
+    } else if (room.mode === 'arcade' && alive.length <= 1) {
+      winner = alive.length ? alive[0][0] : ''; reason = alive.length ? 'survival' : 'draw';
+    } else if (!alive.length) { winner = ''; reason = 'all-out'; }
+    else return;
+    room.result = {winner, reason, settledAt: Date.now()};
+    return room;
+  });
 });

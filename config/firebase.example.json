@@ -6,5 +6,7 @@
   "FIREBASE_DATABASE_URL": "",
   "USE_TEST_ADS": "true",
   "ADMOB_INTERSTITIAL_ID": "",
-  "ADMOB_REWARDED_ID": ""
+  "ADMOB_REWARDED_ID": "",
+  "APP_CHECK_DEBUG": "false",
+  "FIREBASE_FUNCTIONS_REGION": "us-central1"
 }

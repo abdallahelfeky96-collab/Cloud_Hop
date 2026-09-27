@@ -1,6 +1,6 @@
 import 'dart:math' as math;
 
-enum PlayMode { menu, playing, paused, over }
+enum PlayMode { menu, playing, paused, over, spectate }
 
 enum Swipe { left, right, up, upLeft, upRight }
 
@@ -17,9 +17,11 @@ class Progress {
     Set<String>? skins,
     Set<String>? skies,
     Map<String, int>? items,
-  }) : skins = skins ?? {'pip'},
-       skies = skies ?? {'auto'},
-       items = items ?? {'rocket': 1, 'life': 1, 'spring': 1};
+   }) : skins = skins ?? {'pip'},
+        skies = skies ?? {'auto'},
+        items =
+            items ??
+            {'rocket': 1, 'life': 1, 'spring': 1, 'rock': 0};
   Map<String, dynamic> toJson() => {
     'coins': coins,
     'best': best,
@@ -52,7 +54,8 @@ class Progress {
       skins: skins,
       skies: skies,
       items: {
-        for (final id in ['rocket', 'life', 'spring']) id: count(bag[id]),
+        for (final id in ['rocket', 'life', 'spring', 'rock'])
+          id: count(bag[id]),
       },
     );
   }
@@ -77,7 +80,7 @@ const products = [
     'Extra life',
     'items',
     1000,
-    'Automatic rescue. Once per run.',
+    'Classic: one rescue per life. Use your full bag in one run.',
   ),
   Product(
     'spring',
@@ -85,6 +88,13 @@ const products = [
     'items',
     100,
     'Spring line three steps ahead.',
+  ),
+  Product(
+    'rock',
+    'Rock',
+    'items',
+    600,
+    'Ammo for spectator throws. Cheaper than 2000 coins a throw.',
   ),
   Product('pip', 'Original Pip', 'skins', 0, 'The original explorer.'),
   Product('mint', 'Froggy Pip', 'skins', 100, 'A bright green frog hat.'),
@@ -138,16 +148,42 @@ class Runner {
       run = 0,
       flight = 0,
       rocket = 0,
-      power = 0;
-  int ledge = 0, launch = 0, face = 1;
+      power = 0,
+      animationPhase = 0,
+      gazeX = 0,
+      gazeY = 0;
+  int ledge = 0, launch = 0, face = 1, flipTurns = 1;
+  bool fallSoundPlayed = false;
   bool grounded = true, airborne = false, flip = false, wall = false;
+  double stun = 0;
+}
+
+/// A boulder thrown by a spectator. Simulated locally from its spawn state;
+/// every client runs the same integration, so throws stay in sync over the
+/// network without per-frame writes.
+class RockThrow {
+  final String id, owner;
+  double x, y, vx, vy, age;
+  RockThrow(
+    this.id,
+    this.owner,
+    this.x,
+    this.y,
+    this.vx,
+    this.vy, [
+    this.age = 0,
+  ]);
 }
 
 class GameEngine {
   static const gravity = 2200.0, maxRun = 300.0, width = 420.0;
+  static const rockGravity = 1500.0, rockTtl = 2.8, rockHitRadius = 27.0;
+  final List<RockThrow> rocks = [];
+  final Set<String> rockHits = {};
   final Progress progress;
   final void Function()? onChanged, onEnd;
-  GameEngine(this.progress, {this.onChanged, this.onEnd}) {
+  final void Function(String)? onSound;
+  GameEngine(this.progress, {this.onChanged, this.onEnd, this.onSound}) {
     reset();
   }
   PlayMode mode = PlayMode.menu;
@@ -157,12 +193,19 @@ class GameEngine {
       viewHeight = 740,
       time = 0,
       attractTime = 0,
+      rockTimer = 5,
       moveTime = 0,
       jumpBuffer = 0,
       comboTime = 0,
       messageTime = 0;
   int highest = 0, points = 0, runCoins = 0, chain = 0, direction = 0, seed = 1;
   bool lifeUsed = false, adRevived = false;
+  bool allowRewardAds = true;
+  bool competitive = false, awaitingFinish = false;
+  int roundLives = 2; // Two rescues plus the starting attempt.
+  int get availableLives =>
+      competitive ? roundLives : (progress.items['life'] ?? 0);
+  String character = 'male';
   String message = '';
   Ledge? adGift;
   int get level => highest ~/ 50 + 1;
@@ -178,6 +221,7 @@ class GameEngine {
     camera = 0;
     time = 0;
     attractTime = 0;
+    rockTimer = 5;
     highest = 0;
     points = 0;
     runCoins = 0;
@@ -187,6 +231,10 @@ class GameEngine {
     direction = 0;
     comboTime = 0;
     lifeUsed = false;
+    roundLives = 2;
+    awaitingFinish = false;
+    rocks.clear();
+    rockHits.clear();
     adRevived = false;
     adGift = null;
     message = '';
@@ -197,6 +245,7 @@ class GameEngine {
   void start({int? courseSeed}) {
     reset(courseSeed: courseSeed);
     mode = PlayMode.playing;
+    onSound?.call('start');
   }
 
   /// Menu attract mode: slowly scrolls up through the course and bobs the
@@ -217,6 +266,102 @@ class GameEngine {
     player.grounded = true;
     player.airborne = false;
     player.face = math.cos(attractTime * .6) >= 0 ? 1 : -1;
+  }
+
+  /// Puts the local player into spectator mode after elimination. The round
+  /// keeps running; the camera follows [tickSpectate]'s leader instead.
+  void enterSpectate() {
+    stopInput();
+    mode = PlayMode.spectate;
+    onChanged?.call();
+  }
+
+  /// Spectator frame: ease the camera toward the leader and simulate rocks.
+  void tickSpectate(double dt, double leaderY) {
+    if (mode != PlayMode.spectate) return;
+    time += dt;
+    messageTime = math.max(0, messageTime - dt);
+    camera += ((leaderY - 300) - camera) * math.min(1, dt * 2.5);
+    generate();
+    ledges.removeWhere((q) => q.y > camera + viewHeight + 50);
+    stepRocks(dt);
+  }
+
+  /// Adds a rock unless already known. Remote rocks arrive with an estimated
+  /// age so late joiners see them mid-flight instead of restarting them.
+  void spawnRock({
+    required String id,
+    required String owner,
+    required double x,
+    required double y,
+    required double vx,
+    required double vy,
+    double age = 0,
+  }) {
+    if (id.isEmpty || rocks.any((r) => r.id == id)) return;
+    rocks.add(RockThrow(id, owner, x, y, vx, vy, age));
+  }
+
+  /// Merges network throws (each map carries id/by/x0/y0/vx/vy/t0).
+  /// Own throws are simulated locally from the tap, so [selfId]'s rocks are
+  /// skipped here to avoid double simulation under a different id.
+  void syncRocks(List<Map<String, dynamic>> remote, int nowMs, String selfId) {
+    for (final m in remote) {
+      final id = m['id']?.toString() ?? '';
+      if (id.isEmpty ||
+          (m['by'] ?? '').toString() == selfId ||
+          rocks.any((r) => r.id == id)) {
+        continue;
+      }
+      final t0 = (m['t0'] as num?)?.toInt() ?? nowMs;
+      spawnRock(
+        id: id,
+        owner: (m['by'] ?? '').toString(),
+        x: (m['x0'] as num?)?.toDouble() ?? 210,
+        y: (m['y0'] as num?)?.toDouble() ?? 0,
+        vx: (m['vx'] as num?)?.toDouble() ?? 0,
+        vy: (m['vy'] as num?)?.toDouble() ?? 500,
+        age: math.max(0, (nowMs - t0) / 1000),
+      );
+    }
+  }
+
+  void stepRocks(double dt) {
+    for (final r in rocks) {
+      r.age += dt;
+      r.vy += rockGravity * dt;
+      r.x += r.vx * dt;
+      r.y += r.vy * dt;
+    }
+    rocks.removeWhere((r) => r.age > rockTtl);
+  }
+
+  /// Hit test against the local live player. Each rock hits once; the
+  /// victim stumbles (knockback + brief stun) and may fall off naturally.
+  bool checkRockHits(String selfId) {
+    if (mode != PlayMode.playing) return false;
+    final p = player;
+    var hit = false;
+    for (final r in rocks) {
+      if (r.owner == selfId || rockHits.contains(r.id)) continue;
+      final dx = r.x - p.x, dy = r.y - p.y;
+      if (dx * dx + dy * dy < rockHitRadius * rockHitRadius) {
+        rockHits.add(r.id);
+        stumble(p.x >= r.x ? 1.0 : -1.0);
+        hit = true;
+      }
+    }
+    return hit;
+  }
+
+  void stumble(double dir) {
+    if (mode != PlayMode.playing) return;
+    player.vx = dir * 360;
+    player.stun = .9;
+    direction = 0;
+    moveTime = 0;
+    jumpBuffer = 0;
+    say('HIT!');
   }
 
   void earn(int n) {
@@ -251,7 +396,14 @@ class GameEngine {
     final gift = rng.nextDouble() < .12
         ? (rng.nextDouble() < .35 ? 'ad' : 'free')
         : null;
-    return Ledge(id, x, y, w, gift: gift, giftRoll: rng.nextDouble());
+    return Ledge(
+      id,
+      x,
+      y,
+      w,
+      gift: gift == 'ad' && !allowRewardAds ? null : gift,
+      giftRoll: rng.nextDouble(),
+    );
   }
 
   void generate() {
@@ -308,6 +460,17 @@ class GameEngine {
     p.launch = p.ledge;
     p.flight = 0;
     p.flip = p.power > .72;
+    p.flipTurns = p.power > .90 ? 3 : 1;
+    p.fallSoundPlayed = false;
+    if (mode == PlayMode.playing) {
+      onSound?.call(
+        spring
+            ? 'spring'
+            : p.flip
+            ? (p.flipTurns == 3 ? 'triple_flip' : 'flip')
+            : 'jump',
+      );
+    }
     p.wall = false;
     jumpBuffer = 0;
     if (spring) {
@@ -328,6 +491,7 @@ class GameEngine {
       player.flip = false;
       player.launch = player.ledge;
       player.vy = -520;
+      onSound?.call('rocket');
       say('ROCKET FLIGHT!');
     } else if (id == 'spring') {
       generate();
@@ -335,6 +499,7 @@ class GameEngine {
           choices = ledges.where((q) => q.id == target);
       if (choices.isEmpty || choices.first.spring) return false;
       choices.first.spring = true;
+      onSound?.call('spring_set');
       say('SPRING ON STEP $target');
     } else {
       return false;
@@ -369,6 +534,7 @@ class GameEngine {
     p.y = q.y - 17;
     p.vy = 0;
     p.grounded = true;
+    p.fallSoundPlayed = false;
     p.ledge = q.id;
     if (q.gift != null && !q.claimed) {
       if (q.gift == 'ad') {
@@ -379,6 +545,7 @@ class GameEngine {
       }
     }
     if (!hadFlight) return;
+    if (mode == PlayMode.playing) onSound?.call('land');
     p.airborne = false;
     if (p.flip && p.flight >= .52) {
       earn(10);
@@ -411,9 +578,13 @@ class GameEngine {
   }
 
   bool rescue() {
-    if (lifeUsed || progress.items['life']! <= 0) return false;
+    if (availableLives <= 0) return false;
     lifeUsed = true;
-    progress.items['life'] = progress.items['life']! - 1;
+    if (competitive) {
+      roundLives--;
+    } else {
+      progress.items['life'] = progress.items['life']! - 1;
+    }
     final choices = ledges
         .where(
           (q) => q.id <= highest && q.y - camera > 280 && q.y - camera < 520,
@@ -480,13 +651,19 @@ class GameEngine {
   }
 
   void tick(double dt) {
-    if (mode != PlayMode.playing) return;
+    if (mode != PlayMode.playing || awaitingFinish) return;
     final p = player, oldY = p.y, wasGround = p.grounded;
     time += dt;
     messageTime = math.max(0, messageTime - dt);
     comboTime = math.max(0, comboTime - dt);
     moveTime = math.max(0, moveTime - dt);
     if (moveTime == 0) direction = 0;
+    if (p.stun > 0) {
+      p.stun = math.max(0, p.stun - dt);
+      direction = 0;
+      moveTime = 0;
+      jumpBuffer = 0;
+    }
     // Exponential steering is stable across frame rates, including reversals.
     final target = direction * maxRun;
     p.vx += (target - p.vx) * (1 - math.exp(-(direction == 0 ? 22 : 12) * dt));
@@ -499,6 +676,13 @@ class GameEngine {
     }
     if (jumpBuffer > 0 && p.grounded && p.rocket == 0) jump();
     jumpBuffer = math.max(0, jumpBuffer - dt);
+    // Visual state is independent of jump charge and never affects physics.
+    p.animationPhase += dt * (p.grounded ? p.vx.abs() * .075 : 9);
+    final lookX = (p.vx / maxRun).clamp(-1.0, 1.0);
+    final lookY = p.grounded ? 0.0 : (p.vy / 500).clamp(-1.0, 1.0);
+    final gazeBlend = 1 - math.exp(-12 * dt);
+    p.gazeX += (lookX - p.gazeX) * gazeBlend;
+    p.gazeY += (lookY - p.gazeY) * gazeBlend;
     p.x += p.vx * dt;
     if (p.rocket > 0) {
       p.y -= 520 * dt;
@@ -538,7 +722,38 @@ class GameEngine {
     if (p.y - camera < 300) camera = p.y - 300;
     if (highest >= 1) camera -= beltSpeed * dt;
     generate();
+    stepRocks(dt);
+    // Natural falling-rock hazards during normal gameplay.
+    rockTimer -= dt;
+    if (rockTimer <= 0) {
+      rockTimer = 6 + math.Random().nextDouble() * 6;
+      var wild = 0;
+      for (final r in rocks) {
+        if (r.owner == 'wild') wild++;
+      }
+      if (wild < 3) {
+        final rx = 40 + math.Random().nextDouble() * 340;
+        spawnRock(
+          id: 'wild_${time.toInt()}_${rx.toInt()}',
+          owner: 'wild',
+          x: rx,
+          y: camera - 40,
+          vx: (math.Random().nextDouble() - .5) * 160,
+          vy: 250,
+        );
+      }
+    }
     ledges.removeWhere((q) => q.y > camera + viewHeight + 50);
-    if (p.y - 17 > camera + viewHeight) end();
+    if (p.airborne &&
+        p.vy > 0 &&
+        p.rocket == 0 &&
+        p.y - camera > viewHeight - 150 &&
+        !p.fallSoundPlayed) {
+      p.fallSoundPlayed = true;
+      onSound?.call('fall');
+    }
+    if (p.y - 17 > camera + viewHeight) {
+      end();
+    }
   }
 }

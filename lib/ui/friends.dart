@@ -1,4 +1,8 @@
+import 'ui_sounds.dart';
+import 'cartoon_controls.dart';
+
 import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -46,14 +50,14 @@ class _FriendsSheetState extends State<FriendsSheet> {
     try {
       await work();
     } catch (e) {
-      message = e.toString();
+      message = friendlyOnlineError(e);
     }
     if (mounted) setState(() => busy = false);
   }
 
   Future<void> refresh() => action(() async {
-    friends = (await widget.social.call('friends'))['friends'] as List;
-    invites = (await widget.social.call('invitations'))['invitations'] as List;
+    friends = await widget.social.fetchFriends();
+    invites = await widget.social.fetchInvites();
   });
   @override
   Widget build(BuildContext context) => Padding(
@@ -75,9 +79,9 @@ class _FriendsSheetState extends State<FriendsSheet> {
               ),
             ),
             IconButton(
-              onPressed: busy ? null : refresh,
+              onPressed: UiSounds.wrap(busy ? null : refresh),
               tooltip: 'Refresh',
-              icon: const Icon(Icons.refresh),
+              icon: const CartoonIcon(Icons.refresh),
             ),
           ],
         ),
@@ -85,13 +89,16 @@ class _FriendsSheetState extends State<FriendsSheet> {
           ListTile(
             contentPadding: EdgeInsets.zero,
             title: const Text('My player ID'),
-            subtitle: SelectableText(widget.social.store.uid),
+            subtitle: SelectableText(
+              widget.social.store.uidOrNull ?? 'Signing in…',
+            ),
             trailing: IconButton(
-              icon: const Icon(Icons.copy),
+              icon: const CartoonIcon(Icons.copy),
               tooltip: 'Copy ID',
-              onPressed: () => Clipboard.setData(
-                ClipboardData(text: widget.social.store.uid),
-              ),
+              onPressed: () {
+                final id = widget.social.store.uidOrNull;
+                if (id != null) Clipboard.setData(ClipboardData(text: id));
+              },
             ),
           ),
         TextField(
@@ -102,19 +109,19 @@ class _FriendsSheetState extends State<FriendsSheet> {
           ),
         ),
         FilledButton.icon(
-          onPressed: busy
-              ? null
-              : () => action(() async {
-                  friends =
-                      (await widget.social.call('friends', {
-                            'action': 'add',
-                            'id': id.text.trim(),
-                          }))['friends']
-                          as List;
-                  message = 'Friend request sent';
-                  id.clear();
-                }),
-          icon: const Icon(Icons.person_add),
+          onPressed: UiSounds.wrap(
+            busy
+                ? null
+                : () => action(() async {
+                    final outcome = await widget.social.addFriend(id.text);
+                    friends = await widget.social.fetchFriends();
+                    message = outcome == 'accepted'
+                        ? 'Friend added'
+                        : 'Friend request sent';
+                    id.clear();
+                  }),
+          ),
+          icon: const CartoonIcon(Icons.person_add),
           label: const Text('Add friend'),
         ),
         if (busy) const LinearProgressIndicator(),
@@ -129,16 +136,17 @@ class _FriendsSheetState extends State<FriendsSheet> {
             title: Text('${p['name']} invited you'),
             subtitle: Text('Room ${p['code']}'),
             trailing: TextButton(
-              onPressed: busy
-                  ? null
-                  : () => action(() async {
-                      await widget.join(p['code'] as String);
-                      await widget.social.call('invitations', {
-                        'action': 'dismiss',
-                        'id': p['from'],
-                      });
-                      if (context.mounted) Navigator.pop(context);
-                    }),
+              onPressed: UiSounds.wrap(
+                busy
+                    ? null
+                    : () => action(() async {
+                        await widget.join(p['code'] as String);
+                        await widget.social.dismissInvite(
+                          p['from'].toString(),
+                        );
+                        if (context.mounted) Navigator.pop(context);
+                      }),
+              ),
               child: const Text('Join'),
             ),
           ),
@@ -163,45 +171,46 @@ class _FriendsSheetState extends State<FriendsSheet> {
               children: [
                 if (p['status'] == 'pending' && p['incoming'] == true)
                   TextButton(
-                    onPressed: busy
-                        ? null
-                        : () => action(() async {
-                            friends =
-                                (await widget.social.call('friends', {
-                                      'action': 'accept',
-                                      'id': p['id'],
-                                    }))['friends']
-                                    as List;
-                          }),
+                    onPressed: UiSounds.wrap(
+                      busy
+                          ? null
+                          : () => action(() async {
+                              await widget.social.acceptFriend(
+                                p['id'].toString(),
+                              );
+                              friends = await widget.social.fetchFriends();
+                            }),
+                    ),
                     child: const Text('Accept'),
                   ),
                 if (p['status'] == 'accepted' && widget.roomCode != null)
                   TextButton(
-                    onPressed: busy
-                        ? null
-                        : () => action(() async {
-                            await widget.social.call('invitations', {
-                              'action': 'send',
-                              'id': p['id'],
-                              'code': widget.roomCode,
-                            });
-                            message = 'Invitation sent';
-                          }),
+                    onPressed: UiSounds.wrap(
+                      busy
+                          ? null
+                          : () => action(() async {
+                              await widget.social.sendInvite(
+                                p['id'].toString(),
+                                widget.roomCode!,
+                              );
+                              message = 'Invitation sent';
+                            }),
+                    ),
                     child: const Text('Invite'),
                   ),
                 IconButton(
                   tooltip: 'Remove or decline',
-                  icon: const Icon(Icons.close),
-                  onPressed: busy
-                      ? null
+                  icon: const CartoonIcon(Icons.close),
+                  onPressed: UiSounds.wrap(
+                    busy
+                        ? null
                       : () => action(() async {
-                          friends =
-                              (await widget.social.call('friends', {
-                                    'action': 'remove',
-                                    'id': p['id'],
-                                  }))['friends']
-                                  as List;
+                          await widget.social.removeFriend(
+                            p['id'].toString(),
+                          );
+                          friends = await widget.social.fetchFriends();
                         }),
+                  ),
                 ),
               ],
             ),
@@ -209,7 +218,7 @@ class _FriendsSheetState extends State<FriendsSheet> {
         ),
         const SizedBox(height: 16),
         OutlinedButton(
-          onPressed: () => Navigator.pop(context),
+          onPressed: UiSounds.wrap(() => Navigator.pop(context)),
           child: const Text('Done'),
         ),
       ],

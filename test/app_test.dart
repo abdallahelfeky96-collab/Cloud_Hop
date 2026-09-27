@@ -1,3 +1,4 @@
+import 'package:cloud_hop/ui/cartoon_controls.dart';
 import 'package:cloud_hop/main.dart';
 import 'package:cloud_hop/services/progress_store.dart';
 import 'package:flutter/material.dart';
@@ -15,17 +16,51 @@ void main() {
     addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(CloudHop(store: store, progress: progress));
     await tester.pump(const Duration(seconds: 1));
-    await tester.tap(find.byIcon(Icons.play_arrow_rounded));
+    await tester.tap(
+      find.byWidgetPredicate(
+        (w) =>
+            w is CartoonButton && w.art == artForIcon(Icons.play_arrow_rounded),
+      ),
+    );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 50));
-    expect(find.byIcon(Icons.rocket_launch_rounded), findsOneWidget);
-    final rocket = tester.getCenter(find.byIcon(Icons.rocket_launch_rounded));
-    final spring = tester.getCenter(find.byIcon(Icons.horizontal_rule_rounded));
-    final life = tester.getCenter(find.byIcon(Icons.favorite_rounded));
+    expect(
+      find.byWidgetPredicate(
+        (w) =>
+            w is CartoonButton &&
+            w.art == artForIcon(Icons.rocket_launch_rounded),
+      ),
+      findsOneWidget,
+    );
+    final rocket = tester.getCenter(
+      find.byWidgetPredicate(
+        (w) =>
+            w is CartoonButton &&
+            w.art == artForIcon(Icons.rocket_launch_rounded),
+      ),
+    );
+    final spring = tester.getCenter(
+      find.byWidgetPredicate(
+        (w) =>
+            w is CartoonButton &&
+            w.art == artForIcon(Icons.horizontal_rule_rounded),
+      ),
+    );
+    final life = tester.getCenter(
+      find.byWidgetPredicate(
+        (w) =>
+            w is CartoonButton && w.art == artForIcon(Icons.favorite_rounded),
+      ),
+    );
     expect(rocket.dy, spring.dy);
     expect(spring.dy, life.dy);
     expect(tester.takeException(), isNull);
-    await tester.tap(find.byIcon(Icons.arrow_back_rounded));
+    await tester.tap(
+      find.byWidgetPredicate(
+        (w) =>
+            w is CartoonButton && w.art == artForIcon(Icons.arrow_back_rounded),
+      ),
+    );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 10));
     expect(find.text('Create a room & invite'), findsOneWidget);
@@ -44,7 +79,12 @@ void main() {
     final progress = await store.load();
     await tester.pumpWidget(CloudHop(store: store, progress: progress));
     await tester.pump(const Duration(seconds: 1));
-    await tester.tap(find.byIcon(Icons.play_arrow_rounded));
+    await tester.tap(
+      find.byWidgetPredicate(
+        (w) =>
+            w is CartoonButton && w.art == artForIcon(Icons.play_arrow_rounded),
+      ),
+    );
     await tester.pump();
     expect(find.text('Finding your challenger…'), findsOneWidget);
     await tester.pump(const Duration(seconds: 4));
@@ -52,7 +92,8 @@ void main() {
     await tester.pump(const Duration(seconds: 1));
     await tester.pump();
     expect(find.text('Finding your challenger…'), findsNothing);
-    expect(find.textContaining('BOT'), findsWidgets);
+    expect(find.textContaining('Goal 100'), findsWidgets);
+    expect(find.textContaining(' · BOT'), findsNothing);
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
   });

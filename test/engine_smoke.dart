@@ -147,18 +147,29 @@ void main() {
       'spring power',
     );
   });
-  test('extra life once per run', () {
+  test('Classic consumes every owned life before ending', () {
     final g = fresh();
-    g.progress.items['life'] = 2;
+    g.progress.items['life'] = 5;
+    for (var remaining = 4; remaining >= 0; remaining--) {
+      g.end();
+      check(
+        g.mode == PlayMode.playing && g.progress.items['life'] == remaining,
+        'one rescue per owned life',
+      );
+    }
+    g.end();
+    check(g.mode == PlayMode.over, 'ends when lives are exhausted');
+  });
+  test('Competitive attempts do not spend owned lives', () {
+    final g = fresh()..competitive = true;
+    g.progress.items['life'] = 10;
+    g.end();
+    g.end();
+    check(g.mode == PlayMode.playing && g.roundLives == 0, 'two equal rescues');
     g.end();
     check(
-      g.mode == PlayMode.playing && g.progress.items['life'] == 1,
-      'rescue',
-    );
-    g.end();
-    check(
-      g.mode == PlayMode.over && g.progress.items['life'] == 1,
-      'not twice',
+      g.mode == PlayMode.over && g.progress.items['life'] == 10,
+      'third fall ends without spending inventory',
     );
   });
   test('ad revive resumes the run exactly once', () {
@@ -168,10 +179,7 @@ void main() {
     g.end(allowRescue: false);
     check(g.mode == PlayMode.over, 'game over');
     check(g.revive(), 'revived');
-    check(
-      g.mode == PlayMode.playing && g.player.grounded,
-      'run continues',
-    );
+    check(g.mode == PlayMode.playing && g.player.grounded, 'run continues');
     check(g.highest == 12, 'score kept');
     g.end(allowRescue: false);
     check(g.mode == PlayMode.over && !g.revive(), 'one revive only');
@@ -184,6 +192,79 @@ void main() {
     check(!g.player.grounded, 'continuous jump');
     g.stopInput();
     check(g.direction == 0 && g.jumpBuffer == 0, 'release stops');
+  });
+  test('spectator rocks simulate, dedupe and expire', () {
+    final g = fresh();
+    g.enterSpectate();
+    check(g.mode == PlayMode.spectate, 'spectating');
+    g.spawnRock(id: 'r1', owner: 'mallory', x: 210, y: 100, vx: 0, vy: 500);
+    g.spawnRock(id: 'r1', owner: 'mallory', x: 0, y: 0, vx: 0, vy: 0);
+    check(g.rocks.length == 1, 'dedupe by id');
+    final y = g.rocks.first.y;
+    g.stepRocks(1 / 120);
+    check(g.rocks.first.y > y, 'gravity falls');
+    check(g.rocks.first.vy > 500, 'accelerates');
+    for (int i = 0; i < 400; i++) g.stepRocks(1 / 120);
+    check(g.rocks.isEmpty, 'expired by ttl');
+  });
+  test('rock hits stumble the victim exactly once', () {
+    final g = fresh();
+    g.spawnRock(
+      id: 'r1',
+      owner: 'mallory',
+      x: g.player.x,
+      y: g.player.y,
+      vx: 0,
+      vy: 0,
+    );
+    check(g.checkRockHits('me'), 'hit registers');
+    check(g.player.stun > 0 && g.player.vx != 0, 'stumble impulse');
+    check(!g.checkRockHits('me'), 'each rock hits once');
+    g.spawnRock(
+      id: 'r2',
+      owner: 'me',
+      x: g.player.x,
+      y: g.player.y,
+      vx: 0,
+      vy: 0,
+    );
+    check(!g.checkRockHits('me'), 'own rocks harmless');
+  });
+  test('spectator camera follows the leader', () {
+    final g = fresh();
+    g.enterSpectate();
+    final cam = g.camera;
+    g.tickSpectate(1, cam - 500);
+    check(g.camera < cam, 'camera climbs to leader');
+    g.tickSpectate(30, cam - 500);
+    check((g.camera - (cam - 800)).abs() < 1, 'camera settles');
+  });
+  test('network rocks merge without duplicates', () {
+    final g = fresh();
+    final remote = [
+      {
+        'id': 'a',
+        'by': 'x',
+        'x0': 1,
+        'y0': 2,
+        'vx': 0,
+        'vy': 0,
+        't0': 1000,
+      },
+    ];
+    g.syncRocks(remote, 1000, 'me');
+    g.syncRocks(remote, 1100, 'me');
+    check(g.rocks.length == 1, 'merged once');
+    g.syncRocks([
+      {'id': 'b', 'by': 'me', 'x0': 0, 'y0': 0, 'vx': 0, 'vy': 0, 't0': 1100},
+    ], 1100, 'me');
+    check(g.rocks.length == 1, 'own throws skipped');
+  });
+  test('rematch reset clears rocks for a fresh round', () {
+    final g = fresh();
+    g.spawnRock(id: 'r1', owner: 'x', x: 0, y: 0, vx: 0, vy: 0);
+    g.start(courseSeed: 7);
+    check(g.rocks.isEmpty && g.rockHits.isEmpty, 'clean round');
   });
   test('gift claim is idempotent and progress round trips', () {
     final g = fresh();

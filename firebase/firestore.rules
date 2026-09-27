@@ -2,6 +2,25 @@
 rules_version = '2';
 service cloud.firestore {
  match /databases/{database}/documents {
+  // Public profile document for each signed-in user. Clients may only
+  // touch their own uid; richer social reads go through Cloud Functions.
+  match /users/{uid} {
+   // Display names must be readable by other signed-in players for the
+   // friend list; writes stay strictly owner-only.
+   allow read: if request.auth != null;
+   allow delete: if request.auth != null && request.auth.uid == uid;
+   allow create, update: if request.auth != null && request.auth.uid == uid
+    && request.resource.data.keys().hasOnly(['name','country','city','character','updatedAt'])
+    && request.resource.data.name is string
+    && request.resource.data.name.size() >= 1
+    && request.resource.data.name.size() <= 16
+    && request.resource.data.country is string
+    && request.resource.data.country.size() <= 40
+    && request.resource.data.city is string
+    && request.resource.data.city.size() <= 40
+    && request.resource.data.character in ['male','female']
+    && request.resource.data.updatedAt is timestamp;
+  }
   match /players/{uid} {
    allow read, delete: if request.auth != null && request.auth.uid == uid;
    allow create, update: if request.auth != null && request.auth.uid == uid
@@ -17,10 +36,11 @@ service cloud.firestore {
     && request.resource.data.progress.sky in ['auto','sunset','aurora','candy']
     && request.resource.data.progress.skins is list
     && request.resource.data.progress.skies is list
-    && request.resource.data.progress.items.keys().hasOnly(['rocket','life','spring'])
-    && request.resource.data.progress.items.rocket is int && request.resource.data.progress.items.rocket >= 0
-    && request.resource.data.progress.items.life is int && request.resource.data.progress.items.life >= 0
-    && request.resource.data.progress.items.spring is int && request.resource.data.progress.items.spring >= 0;
+     && request.resource.data.progress.items.keys().hasOnly(['rocket','life','spring','rock'])
+     && request.resource.data.progress.items.rocket is int && request.resource.data.progress.items.rocket >= 0
+     && request.resource.data.progress.items.life is int && request.resource.data.progress.items.life >= 0
+     && request.resource.data.progress.items.spring is int && request.resource.data.progress.items.spring >= 0
+     && request.resource.data.progress.items.rock is int && request.resource.data.progress.items.rock >= 0;
   }
  }
 }

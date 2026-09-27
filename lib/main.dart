@@ -1,7 +1,18 @@
+import 'dart:ui' as ui;
+
+import 'ui/cartoon_controls.dart';
+import 'ui/character_art.dart';
+import 'services/firebase_errors.dart';
+
 import 'dart:async';
+
+import 'ui/ui_sounds.dart';
+
 import 'dart:math' as math;
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_database/firebase_database.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/scheduler.dart';
@@ -11,19 +22,45 @@ import 'config.dart';
 import 'game/engine.dart';
 import 'game/painter.dart';
 import 'services/ads.dart';
+import 'services/game_audio.dart';
 import 'services/progress_store.dart';
 import 'services/race.dart';
 import 'services/social.dart';
+import 'services/push.dart';
 import 'services/voice.dart';
 import 'game/challenge.dart';
 import 'game/swipe_input.dart';
 import 'ui/screens.dart';
 import 'ui/friends.dart';
 
+/// Edge-to-edge background with native immersive bars and cutout support.
+Future<void> applyGameDisplay() async {
+  SystemChrome.setSystemUIOverlayStyle(
+    const SystemUiOverlayStyle(
+      statusBarColor: Colors.transparent,
+      systemNavigationBarColor: Colors.transparent,
+      systemNavigationBarDividerColor: Colors.transparent,
+      statusBarIconBrightness: Brightness.dark,
+      systemNavigationBarIconBrightness: Brightness.dark,
+      systemStatusBarContrastEnforced: false,
+      systemNavigationBarContrastEnforced: false,
+    ),
+  );
+  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  try {
+    await const MethodChannel('cloud_hop/fullscreen')
+        .invokeMethod<void>('apply');
+  } on MissingPluginException {
+    /* Non-Android previews stay edge-to-edge. */
+  } on PlatformException catch (e) {
+    debugPrint('Fullscreen: $e');
+  }
+}
+
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
-  await SystemChrome.setEnabledSystemUIMode(SystemUiMode.immersiveSticky);
+  await applyGameDisplay();
   final store = ProgressStore(),
       progress = await ProgressStoreLoader.load(store);
   runApp(CloudHop(store: store, progress: progress));
@@ -45,6 +82,36 @@ class CloudHop extends StatelessWidget {
       useMaterial3: true,
       colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff355f4b)),
       fontFamily: 'sans-serif',
+      filledButtonTheme: FilledButtonThemeData(
+        style: FilledButton.styleFrom(
+          foregroundColor: const Color(0xff254d43),
+          backgroundColor: const Color(0xffffe3a3),
+          minimumSize: const Size(56, 56),
+          elevation: 3,
+          shadowColor: const Color(0xff70958a),
+          side: const BorderSide(color: Color(0xff527565), width: 2),
+          textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(22),
+          ),
+        ),
+      ),
+      outlinedButtonTheme: OutlinedButtonThemeData(
+        style: OutlinedButton.styleFrom(
+          foregroundColor: const Color(0xff254d43),
+          backgroundColor: const Color(0xfffff4dc),
+          minimumSize: const Size(56, 56),
+          side: const BorderSide(color: Color(0xff527565), width: 2),
+          textStyle: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(22),
+          ),
+        ),
+      ),
+      dialogTheme: const DialogThemeData(backgroundColor: Color(0xfffff8e8)),
+      bottomSheetTheme: const BottomSheetThemeData(
+        backgroundColor: Color(0xfffff8e8),
+      ),
     ),
     home: PlayScreen(store: store, progress: progress),
   );
@@ -61,9 +128,15 @@ class PlayScreen extends StatefulWidget {
 class _PlayScreenState extends State<PlayScreen>
     with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final GameEngine game;
+  ui.Image? controlArtwork, characterArtwork;
+  int? resultOutcome;
   late final Ticker ticker;
   late final RaceService race;
   final ads = AdService();
+  final gameAudio = GameAudio();
+  bool audioForeground = true;
+  int audioRound = 0;
+  int audioFeedbackRound = -1;
   Duration previous = Duration.zero;
   double accumulator = 0;
   final swipeInput = SwipeInput();
@@ -71,6 +144,11 @@ class _PlayScreenState extends State<PlayScreen>
   late final SocialService social;
   late final VoiceService voice;
   PracticeRival? rival;
+  GameChoice runChoice = GameChoice.classic;
+  bool get classicMode =>
+      !race.active &&
+      (game.mode == PlayMode.menu ? settings.choice : runChoice) ==
+          GameChoice.classic;
   bool searching = false, splash = true;
   int searchGeneration = 0;
   String? searchId;
@@ -87,6 +165,12 @@ class _PlayScreenState extends State<PlayScreen>
       raceStarted = false,
       roomOpen = false;
   late Timer saveTimer, networkTimer;
+  late final PushService push;
+  StreamSubscription? _pushLinksSub, _pushMsgsSub, _invitesSub, _friendsSub;
+  final _seenPushKeys = <String>{};
+  bool _overlayOpen = false, _invitesAttached = false;
+  String? _voicePreconnectedFor;
+  int _voiceRetryAtMs = 0;
   final peerPositions = <String, Offset>{};
   Progress get progress => widget.progress;
   @override
@@ -98,13 +182,25 @@ class _PlayScreenState extends State<PlayScreen>
       onChanged: () {
         dirty = true;
       },
+      onSound: (cue) {
+        if (cue == 'start') audioRound++;
+        syncAudio();
+        gameAudio.cue(cue);
+      },
       onEnd: () {
         unawaited(handleGameOver());
       },
     );
     settings = PlayerSettings(widget.store.prefs);
+    game.character = settings.character;
+    unawaited(
+      CharacterArt.animatedBody.then((image) {
+        if (mounted) setState(() => characterArtwork = image);
+      }),
+    );
     social = SocialService(widget.store);
-    voice = VoiceService(social)..addListener(raceChanged);
+    push = PushService(widget.store);
+    voice = VoiceService()..addListener(raceChanged);
     race = RaceService(widget.store)..addListener(raceChanged);
     splashTimer = Timer(const Duration(milliseconds: 850), () {
       if (mounted) setState(() => splash = false);
@@ -118,6 +214,11 @@ class _PlayScreenState extends State<PlayScreen>
         }),
       );
     }
+    UiSounds.click = () {
+      syncAudio();
+      gameAudio.cue('button');
+    };
+    gameAudio.preload();
     ticker = createTicker(frame)..start();
     saveTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (dirty) {
@@ -128,16 +229,239 @@ class _PlayScreenState extends State<PlayScreen>
     networkTimer = Timer.periodic(const Duration(milliseconds: 200), (_) {
       if (race.active && raceStarted) unawaited(race.send(game));
     });
+    unawaited(
+      CartoonAtlas.image
+          .then((image) {
+            if (mounted) setState(() => controlArtwork = image);
+          })
+          .catchError((Object error) {
+            debugPrint('Control artwork: $error');
+          }),
+    );
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(
         ads.initialize().catchError((Object error) {
           debugPrint("Ads unavailable: $error");
         }),
       );
+      unawaited(askPermissionsOnce());
+      unawaited(_initPush());
     });
   }
 
+  /// One-time microphone + notification prompts on game open, so race voice
+  /// and invite alerts work without mid-game popups. Never blocks startup.
+  Future<void> askPermissionsOnce() async {
+    try {
+      if (widget.store.prefs.getBool('permsAsked') == true) return;
+      await widget.store.prefs.setBool('permsAsked', true);
+      await Permission.microphone.request();
+      await Permission.notification.request();
+    } catch (e) {
+      debugPrint('Permissions: $e');
+    }
+  }
+
+  /// Push + realtime invite overlays: FCM tap links plus live RTDB watchers
+  /// for invites and friend requests while the app is open.
+  Future<void> _initPush() async {
+    try {
+      await push.init();
+      _pushLinksSub = push.links.listen(_handlePushLink);
+      _pushMsgsSub = push.foreground.listen(_showPushDialog);
+      _attachRealtimeOverlays();
+    } catch (e) {
+      debugPrint('Push overlays: $e');
+    }
+  }
+
+  /// Deep link from a tapped notification: join the room or open friends.
+  Future<void> _handlePushLink(Map<String, String> data) async {
+    if (!mounted) return;
+    final kind = data['kind'];
+    if (kind == 'invite' || kind == 'match') {
+      final code = (data['code'] ?? '').trim();
+      if (code.isEmpty || race.active) return;
+      try {
+        await race.enter(
+          name: settings.name,
+          joinCode: code.length == 6 ? code : null,
+        );
+        raceStarted = false;
+        if (kind == 'match') {
+          await race.attachMatch(code);
+        }
+        toast('Joining room $code…');
+        await showRace();
+      } catch (e) {
+        debugPrint('Push join failed: $e');
+        toast('Could not join room $code.');
+      }
+      return;
+    }
+    if (kind == 'friend-request') {
+      await showFriends();
+    }
+  }
+
+  void _showPushDialog(Map<String, String> data) {
+    if (!mounted || _overlayOpen) return;
+    final kind = data['kind'];
+    if (kind == 'invite') {
+      final code = (data['code'] ?? '').trim();
+      final from = (data['fromName'] ?? 'A friend').trim();
+      if (code.isEmpty) return;
+      _overlayOpen = true;
+      showDialog<void>(
+        context: context,
+        builder: (dialog) => AlertDialog(
+          title: const Text('Room invitation'),
+          content: Text('$from invited you to room $code.'),
+          actions: [
+            TextButton(
+              onPressed: () {
+                _overlayOpen = false;
+                Navigator.pop(dialog);
+              },
+              child: const Text('Decline'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                _overlayOpen = false;
+                Navigator.pop(dialog);
+                if (race.active) return;
+                try {
+                  await race.enter(name: settings.name, joinCode: code);
+                  raceStarted = false;
+                  await showRace();
+                } catch (e) {
+                  toast('Could not join room $code.');
+                }
+              },
+              child: const Text('Accept'),
+            ),
+          ],
+        ),
+      ).then((_) => _overlayOpen = false);
+      return;
+    }
+    if (kind == 'friend-request') {
+      final from = (data['from'] ?? '').trim();
+      final name = (data['fromName'] ?? 'Someone').trim();
+      if (from.isEmpty) return;
+      _overlayOpen = true;
+      showDialog<void>(
+        context: context,
+        builder: (dialog) => AlertDialog(
+          title: const Text('Friend request'),
+          content: Text('$name wants to be your friend.'),
+          actions: [
+            TextButton(
+              onPressed: () async {
+                _overlayOpen = false;
+                Navigator.pop(dialog);
+                try {
+                  await social.removeFriend(from);
+                } catch (e) {
+                  debugPrint('Decline request: $e');
+                }
+              },
+              child: const Text('Decline'),
+            ),
+            FilledButton(
+              onPressed: () async {
+                _overlayOpen = false;
+                Navigator.pop(dialog);
+                try {
+                  await social.acceptFriend(from);
+                  toast('$name is now your friend');
+                } catch (e) {
+                  toast('Could not accept request.');
+                }
+              },
+              child: const Text('Accept'),
+            ),
+          ],
+        ),
+      ).then((_) => _overlayOpen = false);
+    }
+  }
+
+  /// Live RTDB overlays for invites + friend requests (foreground path that
+  /// needs no push transport at all).
+  void _attachRealtimeOverlays() {
+    if (_invitesAttached || !widget.store.cloud) return;
+    _invitesAttached = true;
+    final uid = widget.store.uidOrNull;
+    if (uid == null) return;
+    _invitesSub = FirebaseDatabase.instance
+        .ref('invites/$uid')
+        .onValue
+        .listen(
+          (event) {
+            if (!mounted) return;
+            final map = event.snapshot.value as Map? ?? {};
+            final now = DateTime.now().millisecondsSinceEpoch;
+            for (final entry in map.entries) {
+              if (entry.value is! Map) continue;
+              final m = Map<String, dynamic>.from(entry.value as Map);
+              final code = (m['code'] ?? '').toString();
+              final from = (m['from'] ?? entry.key).toString();
+              if (code.isEmpty ||
+                  ((m['expiresAt'] as num?) ?? 0).toInt() <= now) {
+                continue;
+              }
+              final key = 'invite:$from:$code';
+              if (_seenPushKeys.contains(key)) continue;
+              _seenPushKeys.add(key);
+              _showPushDialog({
+                'kind': 'invite',
+                'code': code,
+                'from': from,
+                'fromName': (m['name'] ?? 'A friend').toString(),
+              });
+              break;
+            }
+          },
+          onError: (Object e) => debugPrint('Invite watch: $e'),
+        );
+    _friendsSub = FirebaseDatabase.instance
+        .ref('userFriends/$uid')
+        .onValue
+        .listen(
+          (event) {
+            if (!mounted) return;
+            final map = event.snapshot.value as Map? ?? {};
+            for (final entry in map.entries) {
+              if (entry.value is! Map) continue;
+              final m = Map<String, dynamic>.from(entry.value as Map);
+              if (m['status'] != 'pending' || m['incoming'] != true) continue;
+              final from = entry.key.toString();
+              final key = 'friend:$from';
+              if (_seenPushKeys.contains(key)) continue;
+              _seenPushKeys.add(key);
+              _showPushDialog({
+                'kind': 'friend-request',
+                'from': from,
+                'fromName': (m['name'] ?? 'Someone').toString(),
+              });
+              break;
+            }
+          },
+          onError: (Object e) => debugPrint('Friend watch: $e'),
+        );
+  }
+
+  void syncAudio() => gameAudio.sync(
+    playing: game.mode == PlayMode.playing,
+    sound: settings.sound,
+    foreground: audioForeground,
+    ad: adsBusy,
+    voice: voice.connected || voice.busy,
+  );
+
   void frame(Duration elapsed) {
+    syncAudio();
     if (previous != Duration.zero) {
       accumulator += math.min(
         (elapsed - previous).inMicroseconds / 1000000,
@@ -149,13 +473,38 @@ class _PlayScreenState extends State<PlayScreen>
     while (accumulator >= 1 / 120) {
       if (game.mode == PlayMode.menu) {
         game.attract(1 / 120);
+      } else if (game.mode == PlayMode.spectate) {
+        game.tickSpectate(1 / 120, _spectateLeaderY());
+        if (race.active) {
+          game.syncRocks(
+            race.throwEvents,
+            race.serverNow,
+            race.uidOrNull ?? '',
+          );
+          _pruneRocksThrottled();
+        }
       } else {
         if (_joyHeld) game.holdJump(_joyDir);
         game.tick(1 / 120);
+        if (race.active && game.mode == PlayMode.playing) {
+          final selfId = race.uidOrNull ?? '';
+          game.syncRocks(race.throwEvents, race.serverNow, selfId);
+          game.checkRockHits(selfId);
+          _pruneRocksThrottled();
+        }
       }
       if (game.mode == PlayMode.playing && rival != null) {
         rival!.tick(1 / 120, game);
-        if (rival!.elapsed >= 120) game.end(allowRescue: false);
+        final opponent = rival!;
+        if (runChoice == GameChoice.race &&
+            (game.highest >= settings.raceTarget ||
+                opponent.step >= settings.raceTarget)) {
+          resultOutcome = game.highest >= settings.raceTarget ? 1 : -1;
+          game.end(allowRescue: false);
+        } else if (runChoice == GameChoice.arcade && opponent.out) {
+          resultOutcome = 1;
+          game.end(allowRescue: false);
+        }
       }
       accumulator -= 1 / 120;
     }
@@ -168,7 +517,12 @@ class _PlayScreenState extends State<PlayScreen>
   }
 
   void checkRace() {
-    if (!race.active) return;
+    if (!race.active) {
+      _voicePreconnectedFor = null;
+      return;
+    }
+    // Background voice pre-connect (muted): mic taps then unmute instantly.
+    preconnectVoice();
     if (race.error != null && race.room.isEmpty) {
       final message = race.error!;
       unawaited(voice.leave());
@@ -179,17 +533,75 @@ class _PlayScreenState extends State<PlayScreen>
       toast(message);
       return;
     }
+    // Same-room rematch from the host: everyone auto-starts the new round.
+    final rematchRound = race.rematchRound;
+    if (rematchRound > _seenRematchRound) {
+      _seenRematchRound = rematchRound;
+      _applyRematch();
+    }
     if (race.started && !raceStarted) {
       raceStarted = true;
       endAd = false;
-      game.start(courseSeed: race.seed);
+      runChoice = race.arcade ? GameChoice.arcade : GameChoice.race;
+      resultOutcome = null;
+      game.character = settings.character;
+      game.competitive = true;
+      game.allowRewardAds = false;
+      game.start(courseSeed: race.effectiveSeed);
       Navigator.of(context).popUntil((route) => route.isFirst);
       roomOpen = false;
       rival = null;
-      game.say('GO! TWO MINUTES');
+      game.say(
+        race.arcade ? 'LAST PLAYER STANDING' : 'FIRST TO ${race.target} STEPS',
+      );
     }
-    if (raceStarted && race.finished && game.mode != PlayMode.over) {
-      game.end(allowRescue: false);
+    if (raceStarted && !race.finished) _maybeSettleRound();
+    if (raceStarted && race.finished) {
+      final finishedSelfId = race.uidOrNull;
+      resultOutcome = race.winner.isEmpty || finishedSelfId == null
+          ? 0
+          : race.winner == finishedSelfId
+          ? 1
+          : -1;
+      if (game.mode == PlayMode.spectate) game.mode = PlayMode.over;
+      if (game.mode != PlayMode.over)
+        game.end(allowRescue: false);
+      else if (!endAd && audioFeedbackRound != audioRound)
+        unawaited(finishRun());
+    }
+    if (raceStarted && !race.finished) {
+      // Last-player-standing fallback when the server result is missing:
+      // arcade settles immediately, race mode waits for finishers briefly.
+      // Requires at least one elimination so the pre-start lobby (all
+      // 'ready') can never trigger it.
+      final selfId = race.uidOrNull;
+      final othersLive = race.livePeers
+          .where((p) => p['id'] != selfId)
+          .toList();
+      final anyDecided = race.peers.any(
+        (p) => p['status'] == 'out' || p['status'] == 'finished',
+      );
+      final anyFinished = race.peers.any((p) => p['status'] == 'finished');
+      if (anyDecided && othersLive.isEmpty) {
+        final now = race.serverNow;
+        if (_allDecidedAtMs == 0) _allDecidedAtMs = now;
+        final graceOk =
+            race.arcade || !anyFinished || now - _allDecidedAtMs > 8000;
+        if (graceOk &&
+            (game.mode == PlayMode.playing || game.mode == PlayMode.spectate)) {
+          _finishRoundLocally();
+        }
+      } else {
+        _allDecidedAtMs = 0;
+      }
+    }
+    if (raceStarted &&
+        !race.arcade &&
+        game.highest >= race.target &&
+        !game.awaitingFinish) {
+      game.say('FINISH! Waiting for the result…');
+      game.awaitingFinish = true;
+      game.stopInput();
     }
     if (race.error != null && raceStarted) {
       game.say(race.error!);
@@ -198,6 +610,9 @@ class _PlayScreenState extends State<PlayScreen>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    audioForeground = state == AppLifecycleState.resumed;
+    syncAudio();
+    if (state == AppLifecycleState.resumed) unawaited(applyGameDisplay());
     if (state != AppLifecycleState.resumed) {
       clearJoystick();
       game.stopInput();
@@ -217,7 +632,37 @@ class _PlayScreenState extends State<PlayScreen>
   /// First game-over per run offers a 5s revive countdown; live races and
   /// repeat game-overs go straight to the regular (interstitial) ad flow.
   Future<void> handleGameOver() async {
-    if (race.active || reviveOffered) {
+    final endedRound = audioRound;
+    if (resultOutcome != 1 && resultOutcome != 0) {
+      audioFeedbackRound = endedRound;
+      await Future<void>.delayed(const Duration(milliseconds: 430));
+      if (!mounted || endedRound != audioRound || game.mode != PlayMode.over)
+        return;
+      syncAudio();
+      gameAudio.cue('lose');
+      await Future<void>.delayed(const Duration(milliseconds: 550));
+      if (!mounted || endedRound != audioRound || game.mode != PlayMode.over)
+        return;
+    }
+    audioFeedbackRound = -1;
+    if (race.active && !race.finished) {
+      // Personal fall, round continues: spectate while others stand,
+      // otherwise settle locally. Never leaves the room.
+      unawaited(race.send(game));
+      final selfId = race.uidOrNull;
+      final othersLive = race.livePeers
+          .where((p) => p['id'] != selfId)
+          .toList();
+      if (othersLive.isNotEmpty) {
+        game.enterSpectate();
+        game.say('SPECTATING · TAP THE SKY FOR ROCKS');
+        if (mounted) setState(() {});
+        return;
+      }
+      _finishRoundLocally();
+      return;
+    }
+    if (!classicMode || reviveOffered) {
       await finishRun();
       return;
     }
@@ -250,12 +695,15 @@ class _PlayScreenState extends State<PlayScreen>
   /// one-time revive and the run continues; anything else falls through to
   /// the regular skippable interstitial via [finishRun].
   Future<void> acceptRevive() async {
-    if (reviveSeconds == null || adsBusy) return;
+    if (!classicMode || reviveSeconds == null || adsBusy) return;
     cancelRevive();
     adsBusy = true;
+    syncAudio();
     if (mounted) setState(() {});
     final earned = await ads.reward();
+    await applyGameDisplay();
     adsBusy = false;
+    syncAudio();
     if (earned && game.revive()) {
       endAd = false;
       if (mounted) setState(() {});
@@ -276,20 +724,98 @@ class _PlayScreenState extends State<PlayScreen>
     if (endAd) return;
     endAd = true;
     adsBusy = true;
+    syncAudio();
     if (rival != null) {
-      result = rival!.bestTarget > 0
-          ? (game.highest > rival!.bestTarget
-                ? 'New personal best!'
-                : 'Best target: ${rival!.bestTarget}')
-          : (game.highest > rival!.step.floor()
-                ? 'You win! · Practice bot'
-                : 'Good race! · Practice bot');
+      resultOutcome ??= runChoice == GameChoice.arcade ? -1 : 2;
+      result = resultOutcome == 1 ? 'You win!' : 'Out of attempts';
+      if (resultOutcome == -1 &&
+          rival!.step >= settings.raceTarget &&
+          runChoice == GameChoice.race)
+        result = '${rival!.name} wins!';
     }
     await voice.leave();
     adsBusy = true;
+    syncAudio();
     await widget.store.save(progress);
     await ads.betweenRuns();
+    await applyGameDisplay();
     adsBusy = false;
+    syncAudio();
+    if (mounted) setState(() {});
+  }
+
+  /// "Play again" while in a room stays in the same room: the host starts
+  /// a fresh round, everyone else votes and auto-starts on the rematch.
+  Future<void> playAgainInRoom() async {
+    if (!race.active || adsBusy) return;
+    final isHost = race.room['host'] == race.uidOrNull;
+    try {
+      if (isHost) {
+        await race.startRematch();
+        toast('Rematch started — same room!');
+      } else {
+        await race.requestRematch();
+        _rematchWaiting = true;
+        result = 'Rematch requested · waiting for host';
+        if (mounted) setState(() {});
+      }
+    } catch (e) {
+      debugPrint('Rematch failed: $e');
+      toast(e.toString().replaceFirst('StateError: ', ''));
+    }
+  }
+
+  /// Local standings when the round is decided but no server result exists.
+  /// Champion (last standing) or top-step winner, ties draw.
+  void _finishRoundLocally() {
+    final selfId = race.uidOrNull;
+    var topStep = game.highest, topName = settings.name, topId = selfId;
+    var topCount = 1;
+    for (final p in race.peers) {
+      final step = ((p['step'] as num?) ?? 0).toInt();
+      if (step > topStep) {
+        topStep = step;
+        topName = p['name'].toString();
+        topId = p['id'].toString();
+        topCount = 1;
+      } else if (step == topStep && p['id'].toString() != topId) {
+        topCount++;
+      }
+    }
+    if (topCount > 1) {
+      resultOutcome = 0;
+      result = 'Draw!';
+    } else if (topId == selfId) {
+      resultOutcome = 1;
+      result = topStep == game.highest && game.mode == PlayMode.playing
+          ? 'Last one standing!'
+          : 'You win!';
+    } else {
+      resultOutcome = -1;
+      result = '$topName wins!';
+    }
+    progress.best = math.max(progress.best, game.highest);
+    game.stopInput();
+    game.mode = PlayMode.over;
+    unawaited(race.send(game));
+    unawaited(finishRun());
+  }
+
+  /// Applies a host rematch broadcast: fresh course, countdown, ready mark.
+  void _applyRematch() {
+    cancelRevive();
+    reviveOffered = false;
+    endAd = false;
+    result = '';
+    resultOutcome = null;
+    _rematchWaiting = false;
+    _allDecidedAtMs = 0;
+    race.finishSent = false;
+    peerPositions.clear();
+    game.start(courseSeed: race.effectiveSeed);
+    raceStarted = false;
+    game.say('REMATCH! GET READY');
+    unawaited(race.publishStatus('ready'));
     if (mounted) setState(() {});
   }
 
@@ -299,28 +825,38 @@ class _PlayScreenState extends State<PlayScreen>
       game.mode = PlayMode.playing;
       return;
     }
+    if (race.active) {
+      await playAgainInRoom();
+      return;
+    }
     await Future.wait([voice.leave(), race.leave()]);
+    _seenRematchRound = 0;
+    _rematchWaiting = false;
+    _allDecidedAtMs = 0;
     raceStarted = false;
     rival = null;
     result = '';
+    resultOutcome = null;
     endAd = false;
     cancelRevive();
     reviveOffered = false;
-    if (settings.choice == GameChoice.quick) {
+    runChoice = settings.choice;
+    game.character = settings.character;
+    game.competitive = runChoice != GameChoice.classic;
+    game.allowRewardAds = runChoice == GameChoice.classic;
+    if (settings.choice != GameChoice.classic) {
+      syncAudio();
+      gameAudio.cue('challenge_voice');
       await findMatch();
       return;
-    }
-    if (settings.choice == GameChoice.personalBest) {
-      rival = PracticeRival(
-        settings.country,
-        settings.city,
-        bestTarget: math.max(1, progress.best),
-      );
     }
     game.start();
   }
 
   Future<void> goHome() async {
+    audioRound++;
+    syncAudio();
+    gameAudio.cue('exit');
     clearJoystick();
     game.stopInput();
     cancelRevive();
@@ -328,6 +864,11 @@ class _PlayScreenState extends State<PlayScreen>
     rival = null;
     await cancelSearch();
     await Future.wait([voice.leave(), race.leave()]);
+    _seenRematchRound = 0;
+    _rematchWaiting = false;
+    _allDecidedAtMs = 0;
+    game.rocks.clear();
+    game.rockHits.clear();
     raceStarted = false;
     result = '';
     if (mounted) setState(() {});
@@ -341,20 +882,21 @@ class _PlayScreenState extends State<PlayScreen>
     searchId = null;
     if (id != null && widget.store.cloud) {
       unawaited(
-        social
-            .call('matchmaking', {'action': 'cancel', 'requestId': id})
-            .then((match) async {
-              // A committed match is left explicitly, so the other racer sees a disconnect.
-              if (match['status'] == 'matched') {
-                final abandoned = RaceService(widget.store);
-                await abandoned.attachMatch(match['code'] as String);
-                await abandoned.leave();
-                abandoned.dispose();
-              }
-            })
-            .catchError((Object e) {
-              debugPrint('Search cleanup: $e');
-            }),
+        () async {
+          try {
+            final poll = await social.matchPoll();
+            await social.matchCancel();
+            // A committed match is left explicitly, so the other racer sees a disconnect.
+            if (poll['status'] == 'matched') {
+              final abandoned = RaceService(widget.store);
+              await abandoned.attachMatch(poll['code'] as String);
+              await abandoned.leave();
+              abandoned.dispose();
+            }
+          } catch (e) {
+            debugPrint('Search cleanup: $e');
+          }
+        }(),
       );
     }
   }
@@ -366,66 +908,116 @@ class _PlayScreenState extends State<PlayScreen>
     final id =
         '${DateTime.now().microsecondsSinceEpoch}-${math.Random.secure().nextInt(0x7fffffff)}';
     searchId = id;
-    final deadline = DateTime.now().add(const Duration(seconds: 5));
-    searchTimer = Timer(const Duration(seconds: 5), () {
+    final deadline = DateTime.now().add(const Duration(seconds: 12));
+    searchTimer = Timer(const Duration(seconds: 12), () {
       if (generation != searchGeneration || !mounted) return;
       unawaited(cancelSearch());
       startBot();
     });
     Map<String, dynamic> match = {'status': 'waiting'};
     try {
+      if (!widget.store.cloud) await widget.store.retryCloud();
+      if (generation != searchGeneration || !mounted) return;
+      attachAuthListener();
+      // Direct client matchmaking: publish, then the smaller uid creates.
+      var createdRoom = false;
+      Future<void> tryCreate() async {
+        final opp = await social.matchScan();
+        final myUid = widget.store.uidOrNull;
+        if (opp == null || myUid == null || myUid.compareTo(opp['id']!) >= 0) {
+          return;
+        }
+        final mode = settings.choice == GameChoice.arcade ? 'arcade' : 'race';
+        final code = await race.createMatchRoom(
+          participants: {myUid: settings.name, opp['id']!: opp['name']!},
+          mode: mode,
+          target: settings.raceTarget,
+          skin: progress.skin,
+          character: settings.character,
+        );
+        await social.matchClaimMine(
+          code: code,
+          peerId: opp['id']!,
+          peerName: opp['name']!,
+          myName: settings.name,
+        );
+        createdRoom = true;
+        match = {'status': 'matched', 'code': code};
+      }
+
       if (widget.store.cloud) {
-        match = await social.call('matchmaking', {
-          'action': 'start',
-          'requestId': id,
-        });
+        await social.matchPublish(
+          requestId: id,
+          mode: settings.choice == GameChoice.arcade ? 'arcade' : 'race',
+          target: settings.raceTarget,
+          name: settings.name,
+        );
+        await tryCreate();
       }
       while (generation == searchGeneration &&
           match['status'] == 'waiting' &&
           DateTime.now().isBefore(deadline)) {
         await Future<void>.delayed(const Duration(milliseconds: 350));
         if (widget.store.cloud) {
-          match = await social.call('matchmaking', {
-            'action': 'poll',
-            'requestId': id,
-          });
+          final poll = await social.matchPoll();
+          if (poll['status'] == 'matched') {
+            match = poll;
+            break;
+          }
+          await tryCreate();
         }
       }
       if (generation != searchGeneration || !mounted) return;
       if (widget.store.cloud && match['status'] == 'waiting') {
-        match = await social.call('matchmaking', {
-          'action': 'cancel',
-          'requestId': id,
-        });
+        await social.matchCancel();
       }
       if (generation != searchGeneration || !mounted) return;
       searchTimer?.cancel();
       searching = false;
       searchId = null;
       if (match['status'] == 'matched') {
-        await race.attachMatch(match['code'] as String);
+        // The creator already watches its room; joiners attach here.
+        if (!createdRoom) {
+          await race.attachMatch(match['code'] as String);
+        }
         toast('Challenger found. Starting together…');
       } else {
         startBot();
       }
     } catch (e) {
       if (generation != searchGeneration || !mounted) return;
+      searchTimer?.cancel(); // Preserve the twelve-second fallback without racing its timer.
       final remaining = deadline.difference(DateTime.now());
       if (remaining > Duration.zero) await Future<void>.delayed(remaining);
       if (generation != searchGeneration || !mounted) return;
       await cancelSearch();
       startBot();
-      toast('Online match unavailable. Practice bot selected.');
+      debugPrint('Matchmaking failed: $e');
+      toast(
+        e is OnlineServiceFailure
+            ? '${e.message} Playing a practice rival.'
+            : 'Online match unavailable. Playing a practice rival.',
+      );
     }
   }
 
   void startBot() {
+    runChoice = settings.choice == GameChoice.arcade
+        ? GameChoice.arcade
+        : GameChoice.race;
+    game.competitive = true;
+    game.character = settings.character;
+    game.allowRewardAds = false;
     searching = false;
     searchId = null;
     endAd = false;
     game.start();
     rival = PracticeRival(settings.country, settings.city, seed: game.seed);
-    game.say('${rival!.name} · 2 MINUTES');
+    game.say(
+      runChoice == GameChoice.arcade
+          ? 'LAST PLAYER STANDING'
+          : 'FIRST TO ${settings.raceTarget} STEPS',
+    );
   }
 
   Future<void> showSettings() async {
@@ -435,12 +1027,24 @@ class _PlayScreenState extends State<PlayScreen>
       useSafeArea: true,
       builder: (_) => SettingsSheet(
         settings: settings,
-        playerId: widget.store.cloud ? widget.store.uid : null,
+        playerId: widget.store.cloud ? widget.store.uidOrNull : null,
         onSave: () async {
-          if (widget.store.cloud) await social.register(settings);
+          if (!widget.store.cloud && !await widget.store.retryCloud()) {
+            throw OnlineServiceFailure(
+              'profile',
+              'unavailable',
+              widget.store.status,
+            );
+          }
+          await social.register(settings);
+          // Retry may have (re)connected: rebind auth state for the avatar.
+          attachAuthListener();
+          refreshAuthFields();
+          if (mounted) setState(() {});
         },
       ),
     );
+    game.character = settings.character;
     if (mounted) setState(() {});
   }
 
@@ -451,6 +1055,8 @@ class _PlayScreenState extends State<PlayScreen>
   }
 
   void attachAuthListener() {
+    unawaited(push.syncToken());
+    _attachRealtimeOverlays();
     if (authSub != null) return;
     try {
       authSub = FirebaseAuth.instance.authStateChanges().listen((user) {
@@ -480,6 +1086,7 @@ class _PlayScreenState extends State<PlayScreen>
       await widget.store.mergeRemoteInto(progress);
       attachAuthListener();
       refreshAuthFields();
+      unawaited(push.syncToken());
       unawaited(
         social.register(settings).catchError((Object e) {
           debugPrint('Profile sync: $e');
@@ -491,24 +1098,13 @@ class _PlayScreenState extends State<PlayScreen>
             : 'Signed in with Google',
       );
     } catch (e) {
-      toast(e.toString().replaceFirst('StateError: ', ''));
+      toast(friendlyOnlineError(e));
     }
     googleBusy = false;
     if (mounted) setState(() {});
   }
 
   Future<void> showProfile() async {
-    if (!widget.store.cloud) {
-      toast('Connecting to Firebase…');
-      if (!await widget.store.retryCloud()) {
-        toast('Could not reach Firebase. Check your connection.');
-        return;
-      }
-      attachAuthListener();
-      refreshAuthFields();
-      if (!mounted) return;
-      setState(() {});
-    }
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -517,11 +1113,10 @@ class _PlayScreenState extends State<PlayScreen>
         store: widget.store,
         progress: progress,
         onChanged: () {
+          attachAuthListener();
           photoUrl = widget.store.photoUrl;
           accountName =
-              widget.store.displayName ??
-              widget.store.email ??
-              settings.name;
+              widget.store.displayName ?? widget.store.email ?? settings.name;
           unawaited(
             social.register(settings).catchError((Object e) {
               debugPrint('Profile sync: $e');
@@ -542,12 +1137,19 @@ class _PlayScreenState extends State<PlayScreen>
 
   Future<void> showFriends() async {
     if (!widget.store.cloud) {
-      toast('Connect Firebase to add friends and invite players.');
+      if (!await widget.store.retryCloud()) {
+        toast(widget.store.status);
+        return;
+      }
+      attachAuthListener();
+    }
+    try {
+      await social.register(settings);
+    } catch (e) {
+      debugPrint('Friends unavailable: $e');
+      toast(friendlyOnlineError(e));
       return;
     }
-    await social.register(settings).catchError((Object e) {
-      debugPrint('Profile sync: $e');
-    });
     if (!mounted) return;
     await showModalBottomSheet<void>(
       context: context,
@@ -567,15 +1169,45 @@ class _PlayScreenState extends State<PlayScreen>
   }
 
   Future<void> voiceAction() async {
-    if (race.code == null) return;
+    if (!race.active || rival != null || voice.busy) return;
+    final roomCode = race.code;
+    if (roomCode == null) return;
     try {
       if (voice.connected) {
         await voice.toggle();
       } else {
-        await voice.join(race.code!);
+        // Unique identity per player: sharing one id kicks others off it.
+        // Manual taps join unmuted; background pre-connects stay muted.
+        await voice.join(
+          roomCode,
+          displayName: settings.name,
+          identity: widget.store.uidOrNull,
+          startMuted: false,
+        );
+        if (race.code != roomCode || !mounted) {
+          await voice.leave();
+          return;
+        }
+        if (!voice.micLive) {
+          toast(
+            voice.lastError.isEmpty
+                ? 'Microphone is still off. Tap the mic to retry.'
+                : voice.lastError,
+          );
+        }
       }
     } catch (e) {
-      toast('Voice unavailable: $e');
+      debugPrint('Voice connection failed: $e');
+      final detail = e.toString().replaceFirst('StateError: ', '');
+      toast(
+        e is OnlineServiceFailure
+            ? (e.code == 'not-found'
+                  ? 'Voice service is not configured yet. You can keep playing.'
+                  : e.message)
+            : detail.length > 140
+            ? 'Voice failed: ${detail.substring(0, 140)}…'
+            : 'Voice failed: $detail',
+      );
     }
   }
 
@@ -584,7 +1216,159 @@ class _PlayScreenState extends State<PlayScreen>
     _joyDir = 0;
   }
 
+  int _lastRockPruneMs = 0, _lastThrowMs = 0, _lastSettleMs = 0;
+
+  /// Client-side round settlement (replaces the server trigger): mirrors
+  /// the finish/survival/all-out rules and writes the result first-writer-
+  /// wins. Throttled; losers abort silently on the existing result.
+  void _maybeSettleRound() {
+    final now = race.serverNow;
+    if (now - _lastSettleMs < 2000) return;
+    _lastSettleMs = now;
+    if (race.effectiveStartAt == 0 || now < race.effectiveStartAt + 3000) {
+      return;
+    }
+    final rematchAt =
+        ((race.room['rematch'] as Map?)?['startAt'] as num?)?.toInt() ?? 0;
+    if (rematchAt > 0 && now - rematchAt < 8000) return;
+    final players = race.peers;
+    if (players.length < 2) return;
+    String? winner, reason;
+    final finishers = players
+        .where(
+          (p) =>
+              !race.arcade &&
+              ((p['step'] as num?) ?? 0) >= race.target &&
+              p['finishedAt'] != null,
+        )
+        .toList()
+      ..sort(
+        (a, b) => ((a['finishedAt'] as num?) ?? 0).compareTo(
+          (b['finishedAt'] as num?) ?? 0,
+        ),
+      );
+    final alive = players
+        .where((p) => p['status'] == 'live' || p['status'] == 'finished')
+        .toList();
+    if (finishers.isNotEmpty) {
+      final tied =
+          finishers.length > 1 &&
+          finishers[0]['finishedAt'] == finishers[1]['finishedAt'];
+      winner = tied ? '' : finishers[0]['id'].toString();
+      reason = tied ? 'draw' : 'finish';
+    } else if (race.arcade && alive.length <= 1) {
+      winner = alive.isNotEmpty ? alive.first['id'].toString() : '';
+      reason = alive.isNotEmpty ? 'survival' : 'draw';
+    } else if (alive.isEmpty) {
+      winner = '';
+      reason = 'all-out';
+    } else {
+      return;
+    }
+    unawaited(race.settleResult(winner, reason));
+  }
+  int _seenRematchRound = 0, _allDecidedAtMs = 0;
+  bool _rematchWaiting = false;
+  bool get _spectating => game.mode == PlayMode.spectate;
+
+  /// World Y of the leading live player for the spectator camera.
+  double _spectateLeaderY() {
+    final pool = race.livePeers.isNotEmpty ? race.livePeers : race.peers;
+    double? topY;
+    var topStep = -1;
+    for (final p in pool) {
+      final step = ((p['step'] as num?) ?? 0).toInt();
+      if (step > topStep) {
+        topStep = step;
+        topY = (p['y'] as num?)?.toDouble();
+      }
+    }
+    return topY ?? game.camera + 300;
+  }
+
+  String? get _spectateLeader {
+    final live = race.livePeers;
+    if (live.isEmpty) return null;
+    var top = live.first;
+    for (final p in live) {
+      if (((p['step'] as num?) ?? 0) > ((top['step'] as num?) ?? 0)) top = p;
+    }
+    return top['name'].toString();
+  }
+
+  void _pruneRocksThrottled() {
+    if (!race.active) return;
+    final now = race.serverNow;
+    if (now - _lastRockPruneMs < 2000) return;
+    _lastRockPruneMs = now;
+    unawaited(race.pruneRocks(now));
+  }
+
+  /// Spectator tap: drop a boulder from above the tap point.
+  void throwRockAt(Offset local, double maxWidth) {
+    if (!_spectating || !race.active) return;
+    final scale = 420 / maxWidth;
+    _spendAndThrow((local.dx * scale).clamp(20.0, 400.0));
+  }
+
+  /// Spectator Throw-Rock button: auto-aimed at the current leader.
+  void throwRockAtLeader() {
+    if (!_spectating || !race.active) return;
+    _spendAndThrow(_spectateLeaderX());
+  }
+
+  double _spectateLeaderX() {
+    final live = race.livePeers;
+    Map<String, dynamic>? top;
+    for (final p in live.isEmpty ? race.peers : live) {
+      if (top == null ||
+          ((p['step'] as num?) ?? 0) > ((top['step'] as num?) ?? 0)) {
+        top = p;
+      }
+    }
+    return ((top?['x'] as num?)?.toDouble() ?? 210).clamp(20.0, 400.0);
+  }
+
+  /// Rock economy: 1 rock ammo first (600 in the shop), else 2000 coins.
+  /// Returns false (with a toast) when neither covers the throw.
+  bool _spendAndThrow(double worldX) {
+    final now = race.serverNow;
+    if (now - _lastThrowMs < 800) return false;
+    final ammo = progress.items['rock'] ?? 0;
+    if (ammo > 0) {
+      progress.items['rock'] = ammo - 1;
+    } else if (progress.coins >= 2000) {
+      progress.coins -= 2000;
+    } else {
+      toast('Need a rock from the shop or 2000 coins');
+      return false;
+    }
+    _lastThrowMs = now;
+    unawaited(widget.store.save(progress));
+    final id = '${race.uidOrNull ?? 'guest'}_$now';
+    game.spawnRock(
+      id: id,
+      owner: race.uidOrNull ?? 'guest',
+      x: worldX,
+      y: game.camera - 40,
+      vx: 0,
+      vy: 640,
+    );
+    unawaited(
+      race
+          .sendRock(x0: worldX, y0: game.camera - 40, vx: 0, vy: 640, t0: now)
+          .then((key) {
+            if (key == null) {
+              debugPrint('Rock publish failed: ${race.error}');
+            }
+          }),
+    );
+    if (mounted) setState(() {});
+    return true;
+  }
+
   void pause() {
+    if (!classicMode) return;
     clearJoystick();
     game.stopInput();
     if (race.active) {
@@ -596,16 +1380,22 @@ class _PlayScreenState extends State<PlayScreen>
 
   void toast(String message) {
     if (!mounted) return;
+    ScaffoldMessenger.of(context).hideCurrentSnackBar();
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
+      SnackBar(
+        content: Text(message, maxLines: 3, overflow: TextOverflow.ellipsis),
+        behavior: SnackBarBehavior.floating,
+        duration: const Duration(seconds: 3),
+      ),
     );
   }
 
   Future<void> rewardCoins({Ledge? gift}) async {
-    if (adsBusy || race.active) return;
+    if (!classicMode || adsBusy) return;
     final old = game.mode;
     if (old == PlayMode.playing) game.mode = PlayMode.paused;
     adsBusy = true;
+    syncAudio();
     game.stopInput();
     final earned = await ads.reward();
     if (earned) {
@@ -620,6 +1410,7 @@ class _PlayScreenState extends State<PlayScreen>
       toast('No reward earned. Ad may still be loading or was closed early.');
     }
     adsBusy = false;
+    syncAudio();
     if (old == PlayMode.playing) game.mode = old;
     if (mounted) setState(() {});
   }
@@ -651,7 +1442,11 @@ class _PlayScreenState extends State<PlayScreen>
     final scale = 420 / MediaQuery.sizeOf(context).width;
     if (_joystickMode) {
       final dx = details.localPosition.dx * scale - _joyStartX;
-      _joyDir = dx < -12 ? -1 : dx > 12 ? 1 : 0;
+      _joyDir = dx < -12
+          ? -1
+          : dx > 12
+          ? 1
+          : 0;
       return;
     }
     final intent = swipeInput.update(
@@ -660,9 +1455,6 @@ class _PlayScreenState extends State<PlayScreen>
     );
     if (intent == null) return;
     game.swipe(intent);
-    if (settings.sound && intent != Swipe.left && intent != Swipe.right) {
-      unawaited(SystemSound.play(SystemSoundType.click));
-    }
   }
 
   Widget circle(
@@ -678,9 +1470,9 @@ class _PlayScreenState extends State<PlayScreen>
         clipBehavior: Clip.none,
         children: [
           IconButton.filledTonal(
-            onPressed: action,
+            onPressed: UiSounds.wrap(action),
             tooltip: label,
-            icon: Icon(icon, color: color),
+            icon: CartoonIcon(icon, color: color),
             iconSize: 28,
             style: IconButton.styleFrom(
               backgroundColor: Colors.white.withValues(alpha: .82),
@@ -739,8 +1531,8 @@ class _PlayScreenState extends State<PlayScreen>
                       const Spacer(),
                       Text('◉ ${progress.coins}'),
                       IconButton(
-                        onPressed: () => Navigator.pop(sheet),
-                        icon: const Icon(Icons.close),
+                        onPressed: UiSounds.wrap(() => Navigator.pop(sheet)),
+                        icon: const CartoonIcon(Icons.close),
                       ),
                     ],
                   ),
@@ -756,8 +1548,9 @@ class _PlayScreenState extends State<PlayScreen>
                       ButtonSegment(value: 'skies', label: Text('Skies')),
                     ],
                     selected: {category},
-                    onSelectionChanged: (set) =>
-                        setSheet(() => category = set.first),
+                    onSelectionChanged: UiSounds.change(
+                      (set) => setSheet(() => category = set.first),
+                    ),
                   ),
                   const SizedBox(height: 12),
                   Expanded(
@@ -782,10 +1575,12 @@ class _PlayScreenState extends State<PlayScreen>
                               ? Icons.rocket_launch
                               : item.id == 'life'
                               ? Icons.favorite
+                              : item.id == 'rock'
+                              ? Icons.circle
                               : Icons.horizontal_rule;
                           return Card(
                             child: ListTile(
-                              leading: Icon(
+                              leading: CartoonIcon(
                                 icon,
                                 color: category == 'skins'
                                     ? skinColor(item.id)
@@ -799,18 +1594,20 @@ class _PlayScreenState extends State<PlayScreen>
                                         : ''),
                               ),
                               trailing: TextButton(
-                                onPressed:
-                                    equipped ||
-                                        (!owned && progress.coins < item.price)
-                                    ? null
-                                    : () {
-                                        if (purchase(progress, item)) {
-                                          unawaited(
-                                            widget.store.save(progress),
-                                          );
-                                          setSheet(() {});
-                                        }
-                                      },
+                                onPressed: UiSounds.wrap(
+                                  equipped ||
+                                          (!owned &&
+                                              progress.coins < item.price)
+                                      ? null
+                                      : () {
+                                          if (purchase(progress, item)) {
+                                            unawaited(
+                                              widget.store.save(progress),
+                                            );
+                                            setSheet(() {});
+                                          }
+                                        },
+                                ),
                                 child: Text(
                                   equipped
                                       ? 'Equipped'
@@ -825,16 +1622,19 @@ class _PlayScreenState extends State<PlayScreen>
                       ).toList(),
                     ),
                   ),
-                  FilledButton.icon(
-                    onPressed: adsBusy
-                        ? null
-                        : () async {
-                            await rewardCoins();
-                            if (sheet.mounted) setSheet(() {});
-                          },
-                    icon: const Icon(Icons.ondemand_video),
-                    label: const Text('Watch ad · +100 coins'),
-                  ),
+                  if (classicMode)
+                    FilledButton.icon(
+                      onPressed: UiSounds.wrap(
+                        adsBusy
+                            ? null
+                            : () async {
+                                await rewardCoins();
+                                if (sheet.mounted) setSheet(() {});
+                              },
+                      ),
+                      icon: const CartoonIcon(Icons.ondemand_video),
+                      label: const Text('Watch ad · +100 coins'),
+                    ),
                   if (AppConfig.testAds)
                     const Text(
                       'Google test ads · no live revenue',
@@ -845,7 +1645,7 @@ class _PlayScreenState extends State<PlayScreen>
                     style: const TextStyle(fontSize: 10),
                   ),
                   TextButton(
-                    onPressed: () => unawaited(ads.privacy()),
+                    onPressed: UiSounds.wrap(() => unawaited(ads.privacy())),
                     child: const Text('Ad privacy choices'),
                   ),
                 ],
@@ -859,11 +1659,13 @@ class _PlayScreenState extends State<PlayScreen>
 
   Future<void> showRace() async {
     if (!widget.store.cloud) {
-      toast(
-        'Firebase setup is required for live races. Solo mode works offline.',
-      );
-      return;
+      if (!await widget.store.retryCloud()) {
+        toast(widget.store.status);
+        return;
+      }
+      attachAuthListener();
     }
+    if (!mounted) return;
     if (game.mode == PlayMode.playing && !race.active) pause();
     final name = TextEditingController(text: settings.name),
         code = TextEditingController();
@@ -883,7 +1685,7 @@ class _PlayScreenState extends State<PlayScreen>
                 await work();
                 error = '';
               } catch (e) {
-                error = e.toString();
+                error = firebaseProblem(e, service: 'Room connection');
               }
               if (dialog.mounted) setDialog(() => busy = false);
             }
@@ -895,16 +1697,31 @@ class _PlayScreenState extends State<PlayScreen>
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     if (!race.active) ...[
-                      const Text('2–6 players · two minutes · same course'),
+                      Text(
+                        settings.choice == GameChoice.arcade
+                            ? 'Arcade · last player standing · 3 attempts each'
+                            : 'Race · ${settings.raceTarget} steps · 3 attempts each',
+                      ),
                       TextField(
                         controller: name,
                         maxLength: 16,
                         decoration: const InputDecoration(labelText: 'Name'),
                       ),
                       FilledButton(
-                        onPressed: busy
-                            ? null
-                            : () => action(() => race.enter(name: name.text)),
+                        onPressed: UiSounds.wrap(
+                          busy
+                              ? null
+                              : () => action(
+                                  () => race.enter(
+                                    name: name.text,
+                                    mode: settings.choice == GameChoice.arcade
+                                        ? 'arcade'
+                                        : 'race',
+                                    target: settings.raceTarget,
+                                    character: settings.character,
+                                  ),
+                                ),
+                        ),
                         child: const Text('Create room'),
                       ),
                       TextField(
@@ -916,14 +1733,17 @@ class _PlayScreenState extends State<PlayScreen>
                         ),
                       ),
                       TextButton(
-                        onPressed: busy
-                            ? null
-                            : () => action(
-                                () => race.enter(
-                                  name: name.text,
-                                  joinCode: code.text,
+                        onPressed: UiSounds.wrap(
+                          busy
+                              ? null
+                              : () => action(
+                                  () => race.enter(
+                                    name: name.text,
+                                    joinCode: code.text,
+                                    character: settings.character,
+                                  ),
                                 ),
-                              ),
+                        ),
                         child: const Text('Join room'),
                       ),
                     ] else ...[
@@ -951,32 +1771,18 @@ class _PlayScreenState extends State<PlayScreen>
                             'Invite friends',
                             showFriends,
                           ),
-                          AnimatedBuilder(
-                            animation: voice,
-                            builder: (_, _) => ActionOrb(
-                              voice.connected && !voice.muted
-                                  ? Icons.mic
-                                  : Icons.mic_off,
-                              voice.connected
-                                  ? (voice.muted
-                                        ? 'Unmute microphone'
-                                        : 'Mute microphone')
-                                  : 'Join voice (starts muted)',
-                              voice.busy ? null : voiceAction,
-                            ),
-                          ),
                         ],
                       ),
                       const Text(
-                        'Voice is optional. Join muted, then tap the mic to talk.',
+                        'Use the microphone at the bottom-right during gameplay to talk or mute.',
                         style: TextStyle(fontSize: 12),
                       ),
                       if (voice.connected)
                         TextButton(
-                          onPressed: () async {
+                          onPressed: UiSounds.wrap(() async {
                             await voice.leave();
                             if (dialog.mounted) setDialog(() {});
-                          },
+                          }),
                           child: const Text('Leave voice'),
                         ),
                       ...race.peers.map(
@@ -986,22 +1792,31 @@ class _PlayScreenState extends State<PlayScreen>
                           trailing: Text('Step ${p['step']}'),
                         ),
                       ),
-                      if (race.startAt == 0 && race.room['host'] == race.uid)
+                      if (race.startAt == 0 &&
+                          race.room['host'] == race.uidOrNull)
                         FilledButton(
-                          onPressed: busy || race.peers.length < 2
-                              ? null
-                              : () => action(race.start),
+                          onPressed: UiSounds.wrap(
+                            busy || race.peers.length < 2
+                                ? null
+                                : () {
+                                    syncAudio();
+                                    gameAudio.cue('challenge_voice');
+                                    action(race.start);
+                                  },
+                          ),
                           child: const Text('Start race'),
                         ),
                       if (race.startAt > 0 && !race.started)
                         const Text('Starting together…'),
                       TextButton(
-                        onPressed: () => action(() async {
-                          await voice.leave();
-                          await race.leave();
-                          raceStarted = false;
-                          game.mode = PlayMode.menu;
-                        }),
+                        onPressed: UiSounds.wrap(
+                          () => action(() async {
+                            await voice.leave();
+                            await race.leave();
+                            raceStarted = false;
+                            game.mode = PlayMode.menu;
+                          }),
+                        ),
                         child: const Text('Leave room'),
                       ),
                     ],
@@ -1012,7 +1827,7 @@ class _PlayScreenState extends State<PlayScreen>
               ),
               actions: [
                 TextButton(
-                  onPressed: () => Navigator.pop(dialog),
+                  onPressed: UiSounds.wrap(() => Navigator.pop(dialog)),
                   child: const Text('Close'),
                 ),
               ],
@@ -1030,8 +1845,9 @@ class _PlayScreenState extends State<PlayScreen>
   Widget build(BuildContext context) {
     final playing = game.mode == PlayMode.playing;
     final reduced = MediaQuery.of(context).disableAnimations;
+    final selfId = race.uidOrNull;
     final peers = race.active
-        ? race.peers.where((p) => p['id'] != race.uid).map((p) {
+        ? race.peers.where((p) => p['id'] != selfId).map((p) {
             final target = Offset(
               (p['x'] as num).toDouble(),
               (p['y'] as num).toDouble(),
@@ -1050,7 +1866,14 @@ class _PlayScreenState extends State<PlayScreen>
     String? oppName;
     int? oppScore;
     if (race.active) {
-      final others = race.peers.where((p) => p['id'] != race.uid).toList();
+      final others = race.peers.where((p) => p['id'] != selfId).toList();
+      others.sort(
+        (a, b) => a['id'] == race.winner
+            ? -1
+            : b['id'] == race.winner
+            ? 1
+            : 0,
+      );
       if (others.isNotEmpty) {
         oppName = others.first['name'].toString();
         oppScore = ((others.first['step'] as num?) ?? 0).toInt();
@@ -1079,6 +1902,11 @@ class _PlayScreenState extends State<PlayScreen>
                   child: GestureDetector(
                     dragStartBehavior: DragStartBehavior.down,
                     behavior: HitTestBehavior.opaque,
+                    onTapDown: (d) {
+                      if (game.mode == PlayMode.spectate) {
+                        throwRockAt(d.localPosition, box.maxWidth);
+                      }
+                    },
                     onPanStart: (d) {
                       if (_joystickMode) return;
                       final scale = 420 / box.maxWidth;
@@ -1093,6 +1921,8 @@ class _PlayScreenState extends State<PlayScreen>
                     child: CustomPaint(
                       painter: GamePainter(
                         game,
+                        controls: controlArtwork,
+                        characters: characterArtwork,
                         peers: peers,
                         reducedMotion: reduced,
                       ),
@@ -1137,11 +1967,11 @@ class _PlayScreenState extends State<PlayScreen>
                                     Icons.favorite_rounded,
                                     'Automatic extra life',
                                     () => toast(
-                                      'Extra life activates automatically once per run.',
+                                      classicMode
+                                          ? 'Each fall uses one owned life, until none remain.'
+                                          : 'Everyone starts with three attempts. Inventory lives are not spent.',
                                     ),
-                                    badge: game.lifeUsed
-                                        ? '✓'
-                                        : '${progress.items['life']}',
+                                    badge: '${game.availableLives}',
                                   ),
                                 ],
                               ),
@@ -1156,21 +1986,20 @@ class _PlayScreenState extends State<PlayScreen>
                                     ),
                                   ),
                                   const Spacer(),
-                                  if (race.active) Text('${race.remaining}s'),
+                                  if (race.active)
+                                    Text(
+                                      race.arcade
+                                          ? 'Last standing'
+                                          : 'Goal ${race.target}',
+                                    ),
                                   if (rival != null)
                                     Text(
-                                      '${(120 - rival!.elapsed).ceil().clamp(0, 120)}s · ${rival!.name}',
+                                      runChoice == GameChoice.arcade
+                                          ? '${rival!.name} · Arcade'
+                                          : 'Goal ${settings.raceTarget}',
                                       style: const TextStyle(fontSize: 12),
                                     ),
-                                  if (race.active)
-                                    ActionOrb(
-                                      voice.connected && !voice.muted
-                                          ? Icons.mic
-                                          : Icons.mic_off,
-                                      'Room microphone',
-                                      voice.busy ? null : voiceAction,
-                                    ),
-                                  if (!race.active)
+                                  if (classicMode)
                                     ActionOrb(
                                       Icons.pause_rounded,
                                       'Pause',
@@ -1195,9 +2024,49 @@ class _PlayScreenState extends State<PlayScreen>
                               ),
                             ),
                           ),
+                        if (race.active)
+                          Positioned(
+                            bottom: 24,
+                            right: 16,
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                ActionOrb(
+                                  voice.connected && !voice.muted
+                                      ? Icons.mic
+                                      : Icons.mic_off,
+                                  voice.connected
+                                      ? (voice.muted
+                                            ? 'Unmute microphone'
+                                            : 'Mute microphone')
+                                      : 'Turn microphone on',
+                                  voice.busy ? null : voiceAction,
+                                  badge: voice.busy
+                                      ? '…'
+                                      : voice.connected
+                                      ? (voice.muted ? 'OFF' : 'ON')
+                                      : null,
+                                ),
+                                ActionOrb(
+                                  voice.speaker
+                                      ? Icons.volume_up
+                                      : Icons.volume_off,
+                                  voice.speaker
+                                      ? 'Speaker on'
+                                      : 'Speaker off (earpiece)',
+                                  voice.busy
+                                      ? null
+                                      : () => voice.setSpeaker(!voice.speaker),
+                                  badge: voice.connected
+                                      ? (voice.speaker ? 'ON' : 'OFF')
+                                      : null,
+                                ),
+                              ],
+                            ),
+                          ),
                         if (game.adGift != null &&
                             !game.adGift!.claimed &&
-                            !race.active)
+                            classicMode)
                           Positioned(
                             bottom: 24,
                             right: 16,
@@ -1221,27 +2090,65 @@ class _PlayScreenState extends State<PlayScreen>
                     searching: searching,
                     result:
                         race.active && race.finished && race.peers.isNotEmpty
-                        ? '${race.peers.first['name']} wins!'
+                        ? (race.winner.isEmpty
+                              ? 'Draw!'
+                              : '${race.winnerName} wins!')
                         : result,
                     photoUrl: photoUrl,
                     accountName: accountName,
                     oppName: game.mode == PlayMode.over ? oppName : null,
                     oppScore: game.mode == PlayMode.over ? oppScore : null,
+                    outcome: race.active && !race.finished ? 2 : resultOutcome,
                     reviveSeconds: reviveSeconds,
                     isGoogle: widget.store.isGoogle,
                     googleBusy: googleBusy,
                     authBusy: googleBusy,
-                    play: startSolo,
+                    play: () {
+                      startSolo();
+                    },
                     home: goHome,
-                    room: showRace,
-                    shop: showShop,
-                    friends: showFriends,
-                    reward: () => rewardCoins(),
-                    preferences: showSettings,
-                    profile: showProfile,
-                    google: signInFromHome,
+                    room: () {
+                      showRace();
+                    },
+                    shop: () {
+                      showShop();
+                    },
+                    friends: () {
+                      showFriends();
+                    },
+                    showRewards: classicMode,
+                    reward: () {
+                      rewardCoins();
+                    },
+                    preferences: () {
+                      showSettings();
+                    },
+                    profile: () {
+                      showProfile();
+                    },
+                    google: () {
+                      signInFromHome();
+                    },
                     revive: acceptRevive,
                     decline: declineRevive,
+                    spectateLeader: _spectateLeader,
+                    spectateHost:
+                        race.active &&
+                        race.room['host'] == race.uidOrNull,
+                    spectateVotes: race.active ? race.rematchVotes : 0,
+                    rockAmmo: progress.items['rock'] ?? 0,
+                    throwRock: throwRockAtLeader,
+                    rematchWaiting: _rematchWaiting,
+                    rematch: playAgainInRoom,
+                    voiceLabel: voice.connected
+                        ? (voice.muted ? 'Unmute' : 'Mute')
+                        : 'Join voice',
+                    voiceBadge: voice.busy
+                        ? '…'
+                        : voice.connected
+                        ? (voice.muted ? 'OFF' : 'ON')
+                        : null,
+                    voiceToggle: voice.busy ? null : voiceAction,
                     cancelSearch: cancelSearch,
                   ),
                 if (splash)
@@ -1251,17 +2158,13 @@ class _PlayScreenState extends State<PlayScreen>
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(Icons.cloud_rounded, color: teal, size: 88),
-                          SizedBox(height: 16),
-                          Text(
-                            'CLOUD HOP',
-                            style: TextStyle(
-                              color: ink,
-                              fontSize: 24,
-                              letterSpacing: 4,
-                              fontWeight: FontWeight.w900,
-                            ),
+                          CartoonIcon(
+                            Icons.cloud_rounded,
+                            color: teal,
+                            size: 88,
                           ),
+                          SizedBox(height: 16),
+                          CloudHopLogo(height: 100),
                         ],
                       ),
                     ),
@@ -1274,10 +2177,43 @@ class _PlayScreenState extends State<PlayScreen>
     );
   }
 
+  /// Pre-connects voice muted so the mic tap unmutes with ~0 latency.
+  /// Silent: failures surface when the user taps the mic instead.
+  void preconnectVoice() {
+    final code = race.code;
+    if (code == null ||
+        !race.active ||
+        _voicePreconnectedFor == code ||
+        voice.connected ||
+        voice.busy ||
+        DateTime.now().millisecondsSinceEpoch < _voiceRetryAtMs) {
+      return;
+    }
+    _voicePreconnectedFor = code;
+    unawaited(
+      voice
+          .join(
+            code,
+            displayName: settings.name,
+            identity: widget.store.uidOrNull,
+          )
+          .catchError((Object e) {
+            debugPrint('Voice pre-connect: $e');
+            _voicePreconnectedFor = null;
+            _voiceRetryAtMs =
+                DateTime.now().millisecondsSinceEpoch + 30000;
+          }),
+    );
+  }
+
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     unawaited(authSub?.cancel());
+    unawaited(_pushLinksSub?.cancel());
+    unawaited(_pushMsgsSub?.cancel());
+    unawaited(_invitesSub?.cancel());
+    unawaited(_friendsSub?.cancel());
     cancelRevive();
     splashTimer?.cancel();
     searchGeneration++;
@@ -1290,6 +2226,8 @@ class _PlayScreenState extends State<PlayScreen>
     race.removeListener(raceChanged);
     race.dispose();
     ads.dispose();
+    UiSounds.click = null;
+    unawaited(gameAudio.dispose());
     unawaited(widget.store.save(progress));
     super.dispose();
   }

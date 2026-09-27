@@ -35,15 +35,19 @@ void main() {
     }
     expect(g.player.vx, 0);
   });
-  test('adaptive bot alternates leads then leaves room for a comeback', () {
-    final game = GameEngine(Progress())..start(courseSeed: 1);
-    final bot = PracticeRival('Egypt', 'Cairo');
-    for (var i = 0; i < 120 * 120; i++) {
-      game.highest = i ~/ 120;
-      bot.tick(1 / 120, game);
+  test('practice rival plans independently of the human score', () {
+    final first = GameEngine(Progress())..start(courseSeed: 7);
+    final second = GameEngine(Progress())..start(courseSeed: 7);
+    final a = PracticeRival('Egypt', 'Cairo', seed: 7);
+    final b = PracticeRival('Egypt', 'Cairo', seed: 7);
+    for (var i = 0; i < 120 * 20; i++) {
+      first.highest = 900;
+      second.highest = 0;
+      a.tick(1 / 120, first);
+      b.tick(1 / 120, second);
     }
-    expect(bot.name, contains('BOT'));
-    expect(bot.step, lessThan(game.highest));
-    expect(bot.step, greaterThan(game.highest - 6));
+    expect(a.name, isNot(contains('BOT')));
+    expect(a.step, b.step);
+    expect(a.simulation.player.x, b.simulation.player.x);
   });
 }

@@ -1,3 +1,8 @@
+import 'dart:ui' as ui;
+
+import '../ui/cartoon_controls.dart';
+import '../ui/character_art.dart';
+
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -22,7 +27,14 @@ class GamePainter extends CustomPainter {
   final GameEngine game;
   final List<Map<String, dynamic>> peers;
   final bool reducedMotion;
-  GamePainter(this.game, {this.peers = const [], this.reducedMotion = false});
+  final ui.Image? controls, characters;
+  GamePainter(
+    this.game, {
+    this.peers = const [],
+    this.reducedMotion = false,
+    this.controls,
+    this.characters,
+  });
   void pill(
     Canvas c,
     double x,
@@ -70,22 +82,183 @@ class GamePainter extends CustomPainter {
     tp.paint(c, Offset(x - tp.width / 2, y));
   }
 
+  void backpackRocket(Canvas c, int face) {
+    c.save();
+    c.translate(face >= 0 ? -27 : 27, -20);
+    final outline = Paint()
+      ..color = const Color(0xff493329)
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.8;
+    final flame = reducedMotion ? 15.0 : 15 + math.sin(game.time * 34) * 3;
+    oval(c, 0, 32, 6, flame, const Color(0xffffa332));
+    oval(c, 0, 29, 3, flame * .65, const Color(0xffffef99));
+    final fins = Path()
+      ..moveTo(-7, 8)
+      ..lineTo(-14, 24)
+      ..lineTo(-5, 21)
+      ..lineTo(5, 21)
+      ..lineTo(14, 24)
+      ..lineTo(7, 8)
+      ..close();
+    c.drawPath(fins, Paint()..color = const Color(0xffe96556));
+    c.drawPath(fins, outline);
+    final shell = RRect.fromRectAndRadius(
+      const Rect.fromLTWH(-8, -22, 16, 45),
+      const Radius.circular(8),
+    );
+    c.drawRRect(shell, Paint()..color = const Color(0xfffff0ce));
+    c.drawRRect(shell, outline);
+    final nose = Path()
+      ..moveTo(-8, -20)
+      ..quadraticBezierTo(-6, -30, 0, -35)
+      ..quadraticBezierTo(6, -30, 8, -20)
+      ..close();
+    c.drawPath(nose, Paint()..color = const Color(0xffe96556));
+    c.drawPath(nose, outline);
+    oval(c, 0, -9, 5, 6, const Color(0xff487278));
+    oval(c, 0, -10, 3.3, 4, const Color(0xff94e4e5));
+    pill(c, -8, 17, 16, 4, const Color(0xff65888a), 2);
+    c.restore();
+  }
+
   void avatar(
     Canvas c,
     double x,
     double y,
     String skin, {
+    String character = 'male',
     double spin = 0,
     bool rocket = false,
     int face = 1,
     double stride = 0,
     bool lookUp = false,
+    double gazeX = 0,
+    double gazeY = 0,
+    double movement = 0,
+    bool airborne = false,
   }) {
     c.save();
     c.translate(x, y);
     c.rotate(spin);
-    // Mirror the whole body when heading left.
-    c.scale(face >= 0 ? 1.0 : -1.0, 1.0);
+    // Keep the face stable when steering; gaze follows motion without flipping the hair.
+    if (rocket) backpackRocket(c, face);
+    if (characters != null) {
+      // Only the background has alpha. The artwork uses ordinary opaque compositing.
+      final swing = reducedMotion ? 0.0 : math.sin(stride) * movement;
+      final lift = airborne ? -2.0 : 0.0;
+      void limb(Offset root, Offset joint, Offset end, double width) {
+        final path = Path()
+          ..moveTo(root.dx, root.dy)
+          ..quadraticBezierTo(joint.dx, joint.dy, end.dx, end.dy);
+        c.drawPath(
+          path,
+          Paint()
+            ..color = const Color(0xff502708)
+            ..style = PaintingStyle.stroke
+            ..strokeCap = StrokeCap.round
+            ..strokeWidth = width + 3,
+        );
+        c.drawPath(
+          path,
+          Paint()
+            ..shader = ui.Gradient.linear(root, end, [
+              const Color(0xffffdf70),
+              const Color(0xfff2a62e),
+            ])
+            ..style = PaintingStyle.stroke
+            ..strokeCap = StrokeCap.round
+            ..strokeWidth = width,
+        );
+        oval(
+          c,
+          end.dx - 1,
+          end.dy - 1,
+          width * .22,
+          width * .15,
+          const Color(0xffffedaa),
+        );
+      }
+
+      // Short attached arms, slightly longer feet, with restrained opposing swings.
+      limb(
+        const Offset(-10, 4),
+        Offset(-11 - swing * 1.5, 10 + lift),
+        Offset(-12 - swing * 2.5, 14 + lift - math.max(0, swing) * 2),
+        7,
+      );
+      limb(
+        const Offset(10, 4),
+        Offset(11 + swing * 1.5, 10 + lift),
+        Offset(12 + swing * 2.5, 14 + lift - math.max(0, -swing) * 2),
+        7,
+      );
+      limb(
+        const Offset(-21, -12),
+        Offset(-26, -9 + swing * 2 + lift),
+        Offset(-29, -6 + swing * 3 + lift),
+        7,
+      );
+      limb(
+        const Offset(21, -12),
+        Offset(26, -9 - swing * 2 + lift),
+        Offset(29, -6 - swing * 3 + lift),
+        7,
+      );
+      c.drawImageRect(
+        characters!,
+        CharacterArt.bodyRegion(characters!, character),
+        const Rect.fromLTWH(-32, -49, 64, 60),
+        Paint()
+          ..filterQuality = FilterQuality.medium
+          ..colorFilter = const ColorFilter.matrix([
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            1.02,
+            0,
+          ]),
+      );
+      // Small coordinated glances preserve the original friendly expression.
+      final lookX = gazeX.clamp(-1.0, 1.0) * .65;
+      final lookY = gazeY.clamp(-1.0, 1.0) * .55;
+      final blink = !reducedMotion && game.time % 4.6 > 4.45;
+      for (final eyeX in [-9.0, 9.0]) {
+        oval(
+          c,
+          eyeX + lookX,
+          -17 + lookY,
+          3.1,
+          blink ? .65 : 4.2,
+          const Color(0xff291701),
+        );
+        if (!blink)
+          oval(
+            c,
+            eyeX + lookX + .8,
+            -18.7 + lookY,
+            .9,
+            1.1,
+            const Color(0xfffffff3),
+          );
+      }
+      c.restore();
+      return;
+    }
     final color = skinColor(skin),
         hat = skin == 'berry'
             ? const Color(0xffa65782)
@@ -145,11 +318,6 @@ class GamePainter extends CustomPainter {
       oval(c, 20, -25, 6, 4, const Color(0xffffdeae));
     }
     c.restore();
-    if (rocket) {
-      pill(c, x - 13, y + 17, 26, 20, const Color(0xff71869c));
-      oval(c, x, y + 45, 9, 16, const Color(0xfff5a74a));
-      oval(c, x, y + 41, 5, 11, const Color(0xfffff1a8));
-    }
   }
 
   @override
@@ -247,18 +415,31 @@ class GamePainter extends CustomPainter {
       }
       text(canvas, q.id.toString(), q.x + q.w / 2, y - 15, size: 9);
       if (q.gift != null && !q.claimed) {
-        text(
-          canvas,
-          q.gift == 'ad' ? '▷' : '🎁',
-          q.x + q.w / 2,
-          y - 43,
-          size: 23,
-        );
+        if (controls != null) {
+          canvas.save();
+          final bob = reducedMotion
+              ? 0.0
+              : math.sin(game.time * 2.5 + q.id) * 2;
+          canvas.translate(q.x + q.w / 2 - 21, y - 54 + bob);
+          CartoonSpritePainter(
+            controls!,
+            q.gift == 'ad' ? CartoonArt.ad : CartoonArt.gift,
+          ).paint(canvas, const Size(42, 42));
+          canvas.restore();
+        } else {
+          text(
+            canvas,
+            q.gift == 'ad' ? '▷' : '🎁',
+            q.x + q.w / 2,
+            y - 43,
+            size: 23,
+          );
+        }
       }
     }
     int above = 0, below = 0;
     for (final peer in peers) {
-      if (peer['status'] == 'out') continue;
+      if (peer['status'] == 'out' || peer['status'] == 'spectator') continue;
       final x = (peer['x'] as num?)?.toDouble() ?? 210.0,
           y = ((peer['y'] as num?)?.toDouble() ?? 623.0) - game.camera,
           name = peer['name'] as String? ?? 'Pip';
@@ -271,29 +452,57 @@ class GamePainter extends CustomPainter {
           top ? 90 + row * 14.0 : h - 80 - row * 14,
         );
       } else {
-        avatar(canvas, x, y, peer['skin'] as String? ?? 'pip');
-        text(canvas, name, x, y - 40);
+        avatar(
+          canvas,
+          x,
+          y,
+          peer['skin'] as String? ?? 'pip',
+          character: peer['character'] as String? ?? 'male',
+          face: (peer['face'] as num?)?.toInt() ?? 1,
+          stride: (peer['animationPhase'] as num?)?.toDouble() ?? 0,
+          movement: (peer['movement'] as num?)?.toDouble() ?? 0,
+          gazeX: (peer['gazeX'] as num?)?.toDouble() ?? 0,
+          gazeY: (peer['gazeY'] as num?)?.toDouble() ?? 0,
+          airborne: peer['airborne'] == true,
+          rocket: peer['rocket'] == true,
+          spin: reducedMotion ? 0 : (peer['spin'] as num?)?.toDouble() ?? 0,
+        );
+        // Keep the name clear of the taller hair and nearby step numbers.
+        pill(canvas, x - 48, y - 66, 96, 16, const Color(0xfffff8e8));
+        text(canvas, name, x, y - 65, size: 9);
       }
+    }
+    for (final r in game.rocks) {
+      final y = r.y - game.camera;
+      if (y < -30 || y > h + 30) continue;
+      oval(canvas, r.x, y, 10, 10, const Color(0xff6b5a4e));
+      oval(canvas, r.x - 3, y - 3, 4, 4, const Color(0xff9a8878));
     }
     final p = game.player,
         spin = p.flip && p.airborne && !reducedMotion
-            ? math.min(p.flight / .52, 1) * math.pi * 2 * p.face
+            ? math.min(p.flight / .52, 1) * math.pi * 2 * p.flipTurns * p.face
             : 0.0;
     // Limb cycle follows distance run on the ground, airtime in the air.
     double stride = 0;
-    if (!reducedMotion && (p.vx.abs() > 30 || (p.airborne && p.flip))) {
-      stride = p.grounded ? p.run * .12 : p.flight * 10;
+    if (!reducedMotion && (p.vx.abs() > 1 || p.airborne)) {
+      stride = p.animationPhase;
     }
-    avatar(
-      canvas,
-      p.x,
-      p.y - game.camera,
-      game.progress.skin,
+    if (game.mode != PlayMode.spectate)
+      avatar(
+        canvas,
+        p.x,
+        p.y - game.camera,
+        game.progress.skin,
+        character: game.character,
       spin: spin,
       rocket: p.rocket > 0,
       face: p.face,
       stride: stride,
       lookUp: p.airborne && p.vy < -50,
+      gazeX: p.gazeX,
+      gazeY: p.gazeY,
+      movement: p.airborne ? .65 : (p.vx.abs() / 160).clamp(0.0, 1.0),
+      airborne: p.airborne,
     );
     canvas.restore();
   }

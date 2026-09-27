@@ -7,14 +7,16 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+  firebase_app_check: ^0.4.8
   firebase_core: ^4.15.0
   firebase_auth: ^6.7.0
   cloud_firestore: ^6.10.0
   firebase_database: ^12.6.0
+  firebase_messaging: ^16.0.0
   google_mobile_ads: ^9.1.0
   google_sign_in: ^6.3.0
-  cloud_functions: ^6.5.0
   livekit_client: ^2.13.0
+  dart_jsonwebtoken: ^3.4.1
   permission_handler: ^12.0.1
   shared_preferences: ^2.5.5
 dev_dependencies:
@@ -23,3 +25,10 @@ dev_dependencies:
   flutter_lints: ^6.0.0
 flutter:
   uses-material-design: true
+  assets:
+    - assets/ui/cartoon_controls.png
+
+    - assets/ui/cloud_hop_logo.png
+    - assets/ui/characters.png
+    - assets/ui/character_bodies.png
+    - assets/audio/

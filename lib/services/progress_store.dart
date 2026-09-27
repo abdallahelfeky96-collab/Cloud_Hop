@@ -2,22 +2,29 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_app_check/firebase_app_check.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 import '../config.dart';
 import '../game/engine.dart';
+import 'firebase_errors.dart';
 
 class ProgressStore {
   late SharedPreferences prefs;
-  bool cloud = false;
+  // A session is distinct from Firestore/RTDB/Functions access. A rules denial
+  // must never disable Google sign-in or an unrelated Firebase service.
+  bool get cloud => user != null;
   String status = 'Offline save';
+  String? authIssue, firestoreIssue;
   Future<void> _pending = Future.value();
+  Future<void>? _initialization;
+  Future<bool>? _connecting;
 
-  /// Widget tests must never hit the network: stay offline under test.
   static bool get _underTest {
     try {
       return Platform.environment['FLUTTER_TEST'] == 'true';
@@ -38,32 +45,44 @@ class ProgressStore {
       local = Progress();
     }
     if (_underTest || !AppConfig.firebaseConfigured) return local;
+    if (!await retryCloud()) return local;
     try {
-      await _connectCloud();
-      final doc = await FirebaseFirestore.instance
-          .collection('players')
-          .doc(uid)
-          .get();
+      final doc = await _readProgress(uid);
       if (doc.exists) {
-        final map = doc.data()!,
-            remoteStamp = (map['savedAt'] as num?)?.toInt() ?? 0;
-        final localUid = prefs.getString('owner'),
-            localStamp = prefs.getInt('savedAt') ?? 0;
-        if (localUid != uid || remoteStamp >= localStamp) {
+        final map = doc.data()!;
+        final remoteStamp = (map['savedAt'] as num?)?.toInt() ?? 0;
+        final localOwner = prefs.getString('owner');
+        final localStamp = prefs.getInt('savedAt') ?? 0;
+        if (localOwner != uid || remoteStamp >= localStamp) {
           local = Progress.fromJson(Map<String, dynamic>.from(map['progress']));
         }
       }
       await prefs.setString('owner', uid);
-    } catch (_) {
-      cloud = false;
-      status = 'Cloud unavailable; saved on device';
+      firestoreIssue = null;
+      status = 'Signed in · Firestore progress connected';
+    } catch (error) {
+      _recordFirestoreError(error);
     }
     return local;
   }
 
-  /// Initializes Firebase (explicit options with compiled-in fallback) and
-  /// ensures an anonymous identity. Returns true when cloud is reachable.
-  Future<bool> _connectCloud() async {
+  Future<void> initializeServices() async {
+    if (_underTest)
+      throw StateError('Firebase networking is disabled in widget tests.');
+    if (!AppConfig.firebaseConfigured)
+      throw StateError('Firebase configuration is missing.');
+    _initialization ??= _initialize().catchError((
+      Object error,
+      StackTrace stack,
+    ) {
+      _initialization = null;
+      Error.throwWithStackTrace(error, stack);
+    });
+    // A caller timeout does not cancel initialization or start a duplicate.
+    await _initialization!.timeout(const Duration(seconds: 8));
+  }
+
+  Future<void> _initialize() async {
     if (Firebase.apps.isEmpty) {
       await Firebase.initializeApp(
         options: FirebaseOptions(
@@ -75,31 +94,71 @@ class ProgressStore {
         ),
       );
     }
-    if (FirebaseAuth.instance.currentUser == null) {
-      await FirebaseAuth.instance.signInAnonymously();
+    if (Firebase.app().options.projectId != AppConfig.effectiveProject) {
+      throw StateError(
+        'The initialized Firebase project differs from the app configuration.',
+      );
     }
-    cloud = true;
-    status = 'Cloud save connected';
-    return true;
+    // Activate before Auth, Firestore, RTDB or Functions requests.
+    // Debug tokens must be explicitly registered in App Check; never ship
+    // a debug provider in a release build.
+    await FirebaseAppCheck.instance.activate(
+      providerAndroid: !kReleaseMode && AppConfig.appCheckDebug
+          ? const AndroidDebugProvider()
+          : const AndroidPlayIntegrityProvider(),
+    );
   }
 
-  /// Re-attempts the cloud connection, e.g. after an offline startup.
-  /// Safe to call when already connected (no-op returning true).
-  Future<bool> retryCloud() async {
-    if (cloud || _underTest) return cloud;
-    if (!AppConfig.firebaseConfigured) return false;
+  Future<void> checkConnection() async {
+    if (!await retryCloud()) return;
     try {
-      await _connectCloud();
-      await prefs.setString('owner', uid);
+      await _readProgress(uid);
+      firestoreIssue = null;
+      status = 'Signed in · Firestore progress connected';
+    } catch (error) {
+      _recordFirestoreError(error);
+    }
+  }
+
+  Future<bool> retryCloud() async {
+    if (_underTest) return false;
+    if (_connecting != null) return _connecting!;
+    final pending = _connect();
+    _connecting = pending;
+    try {
+      return await pending;
+    } finally {
+      _connecting = null;
+    }
+  }
+
+  Future<bool> _connect() async {
+    try {
+      await initializeServices();
+      if (FirebaseAuth.instance.currentUser == null) {
+        await FirebaseAuth.instance.signInAnonymously().timeout(
+          const Duration(seconds: 8),
+        );
+      }
+      authIssue = null;
+      status =
+          firestoreIssue ??
+          'Firebase signed in; database access is checked separately';
       return true;
-    } catch (_) {
-      cloud = false;
-      status = 'Cloud unavailable; saved on device';
+    } catch (error) {
+      authIssue = firebaseProblem(error, service: 'Firebase guest sign-in');
+      status = authIssue!;
       return false;
     }
   }
 
-  String get uid => FirebaseAuth.instance.currentUser!.uid;
+  String? get uidOrNull => user?.uid;
+
+  String get uid {
+    final id = uidOrNull;
+    if (id == null) throw StateError('Sign in first.');
+    return id;
+  }
 
   User? get user {
     try {
@@ -108,119 +167,129 @@ class ProgressStore {
       return null;
     }
   }
+
   bool get isGoogle =>
-      user != null && !(user!.isAnonymous) && user!.providerData.any(
+      user != null &&
+      !user!.isAnonymous &&
+      user!.providerData.any(
         (p) => p.providerId == GoogleAuthProvider.PROVIDER_ID,
       );
   String? get displayName => user?.displayName;
   String? get email => user?.email;
   String? get photoUrl => user?.photoURL;
 
-  /// Sign in with Google. Links the current anonymous profile when possible
-  /// so coins/skins are kept; otherwise signs in with the Google credential.
-  /// After auth, cloud progress is merged by savedAt stamp (newest wins).
+  // Crucially, this initializes Firebase/App Check, NOT anonymous sign-in.
   Future<void> signInWithGoogle() async {
-    if (!cloud && !await retryCloud()) {
-      throw StateError('Could not reach Firebase. Check your connection.');
-    }
-    final account = await GoogleSignIn().signIn();
-    if (account == null) throw StateError('Google sign-in was cancelled.');
-    final google = await account.authentication;
-    final credential = GoogleAuthProvider.credential(
-      idToken: google.idToken,
-      accessToken: google.accessToken,
-    );
-    final auth = FirebaseAuth.instance;
-    if (auth.currentUser != null && auth.currentUser!.isAnonymous) {
-      try {
-        await auth.currentUser!.linkWithCredential(credential);
-      } on FirebaseAuthException catch (e) {
-        // Already linked elsewhere: fall back to plain sign-in.
-        if (e.code == 'credential-already-in-use' ||
-            e.code == 'email-already-in-use') {
-          await auth.signInWithCredential(credential);
-        } else {
-          rethrow;
-        }
-      }
-    } else {
-      await auth.signInWithCredential(credential);
-    }
-    cloud = true;
-    status = 'Cloud save connected';
-    await prefs.setString('owner', uid);
     try {
-      final doc = await FirebaseFirestore.instance
-          .collection('players')
-          .doc(uid)
-          .get();
-      if (doc.exists) {
-        final map = doc.data()!,
-            remoteStamp = (map['savedAt'] as num?)?.toInt() ?? 0;
-        final localStamp = prefs.getInt('savedAt') ?? 0;
-        if (remoteStamp >= localStamp) {
-          // Caller reloads progress from the returned value when needed.
-          status = 'Cloud save connected';
+      await initializeServices();
+      await _pending;
+      final account = await GoogleSignIn().signIn();
+      if (account == null) throw StateError('Google sign-in was cancelled.');
+      final google = await account.authentication;
+      final credential = GoogleAuthProvider.credential(
+        idToken: google.idToken,
+        accessToken: google.accessToken,
+      );
+      final auth = FirebaseAuth.instance;
+      final anonymous = auth.currentUser;
+      if (anonymous != null && anonymous.isAnonymous) {
+        try {
+          await anonymous.linkWithCredential(credential);
+        } on FirebaseAuthException catch (e) {
+          if (e.code == 'credential-already-in-use' ||
+              e.code == 'email-already-in-use') {
+            await auth.signInWithCredential(credential);
+          } else {
+            rethrow;
+          }
         }
+      } else {
+        await auth.signInWithCredential(credential);
       }
-    } catch (_) {
-      status = 'Cloud unavailable; saved on device';
+      authIssue = null;
+      status = 'Signed in with Google';
+    } catch (error) {
+      authIssue = firebaseProblem(error, service: 'Google sign-in');
+      status = authIssue!;
+      throw StateError(status);
     }
+  }
+
+  Future<DocumentSnapshot<Map<String, dynamic>>> _readProgress(String owner) =>
+      FirebaseFirestore.instance
+          .collection('players')
+          .doc(owner)
+          .get(const GetOptions(source: Source.server))
+          .timeout(const Duration(seconds: 6));
+
+  void _recordFirestoreError(Object error) {
+    firestoreIssue = firebaseProblem(error, service: 'Firestore progress');
+    status =
+        '${cloud ? 'Signed in. ' : ''}${firestoreIssue!} Local progress is kept.';
   }
 
   Future<Progress?> loadCloudProgress() async {
     if (!cloud) return null;
-    final doc = await FirebaseFirestore.instance
-        .collection('players')
-        .doc(uid)
-        .get();
+    final doc = await _readProgress(uid);
     if (!doc.exists) return null;
-    await prefs.setString('owner', uid);
     return Progress.fromJson(
       Map<String, dynamic>.from(doc.data()!['progress']),
     );
   }
 
-  /// Merges cloud progress into [local] (max coins/best/items, union of
-  /// owned skins/skies) and saves. Returns true when a remote doc existed.
+  // Retains the existing merge policy. A denied save service must not make a
+  // successful Google login appear to have failed.
   Future<bool> mergeRemoteInto(Progress local) async {
-    final remote = await loadCloudProgress();
-    if (remote == null) return false;
-    local.coins = local.coins > remote.coins ? local.coins : remote.coins;
-    local.best = local.best > remote.best ? local.best : remote.best;
-    local.skins.addAll(remote.skins);
-    local.skies.addAll(remote.skies);
-    for (final key in local.items.keys) {
-      final have = local.items[key] ?? 0, there = remote.items[key] ?? 0;
-      local.items[key] = have > there ? have : there;
+    try {
+      final remote = await loadCloudProgress();
+      if (remote != null) {
+        local.coins = local.coins > remote.coins ? local.coins : remote.coins;
+        local.best = local.best > remote.best ? local.best : remote.best;
+        local.skins.addAll(remote.skins);
+        local.skies.addAll(remote.skies);
+        for (final key in local.items.keys) {
+          final have = local.items[key] ?? 0, there = remote.items[key] ?? 0;
+          local.items[key] = have > there ? have : there;
+        }
+      }
+      firestoreIssue = null;
+      await save(local);
+      return remote != null;
+    } catch (error) {
+      _recordFirestoreError(error);
+      return false;
     }
-    await save(local);
-    return true;
   }
 
   Future<void> signOutGoogle() async {
-    if (!cloud) throw StateError('Firebase is not configured.');
+    await _pending;
     await GoogleSignIn().signOut();
     await FirebaseAuth.instance.signOut();
-    await FirebaseAuth.instance.signInAnonymously();
-    await prefs.setString('owner', uid);
+    // Sign-out remains successful if anonymous accounts are disabled.
+    await retryCloud();
   }
+
   Future<void> save(Progress p) {
     final payload = p.toJson(), stamp = DateTime.now().millisecondsSinceEpoch;
+    final owner = user?.uid; // Bind queued saves to the original account.
     _pending = _pending.catchError((_) {}).then((_) async {
       await prefs.setString('progress', jsonEncode(payload));
       await prefs.setInt('savedAt', stamp);
-      if (cloud) {
+      if (owner != null) await prefs.setString('owner', owner);
+      if (owner != null && user?.uid == owner) {
         unawaited(
           FirebaseFirestore.instance
               .collection('players')
-              .doc(uid)
+              .doc(owner)
               .set({'progress': payload, 'savedAt': stamp})
               .then((_) {
-                status = 'Cloud save connected';
+                if (user?.uid == owner) {
+                  firestoreIssue = null;
+                  status = 'Signed in · Firestore progress connected';
+                }
               })
               .catchError((Object error) {
-                status = 'Cloud unavailable; saved on device';
+                if (user?.uid == owner) _recordFirestoreError(error);
               }),
         );
       }
@@ -229,33 +298,26 @@ class ProgressStore {
   }
 
   Future<void> linkAccount(String email, String password) async {
-    if (!cloud) throw StateError('Firebase is not configured.');
+    if (!cloud) throw StateError('Sign in first.');
     final credential = EmailAuthProvider.credential(
       email: email,
       password: password,
     );
-    final user = FirebaseAuth.instance.currentUser!;
-    if (user.isAnonymous) {
-      await user.linkWithCredential(credential);
-    } else {
+    final current = FirebaseAuth.instance.currentUser;
+    if (current == null) throw StateError('Sign in first.');
+    if (current.isAnonymous)
+      await current.linkWithCredential(credential);
+    else
       throw StateError('This profile already has an account.');
-    }
   }
 
   Future<Progress?> signIn(String email, String password) async {
-    if (!cloud) throw StateError('Firebase is not configured.');
+    await initializeServices();
     await _pending;
     await FirebaseAuth.instance.signInWithEmailAndPassword(
       email: email,
       password: password,
     );
-    final doc = await FirebaseFirestore.instance
-        .collection('players')
-        .doc(uid)
-        .get();
-    await prefs.setString('owner', uid);
-    return doc.exists
-        ? Progress.fromJson(Map<String, dynamic>.from(doc.data()!['progress']))
-        : null;
+    return loadCloudProgress();
   }
 }
