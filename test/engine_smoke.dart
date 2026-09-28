@@ -207,8 +207,67 @@ void main() {
     for (int i = 0; i < 400; i++) g.stepRocks(1 / 120);
     check(g.rocks.isEmpty, 'expired by ttl');
   });
-  test('rock hits stumble the victim exactly once', () {
+  test('grounded hit shoves to the step edge, second hit drops', () {
     final g = fresh();
+    g.player.x = 210; // center of ledge 0, which spans x 45..375
+    g.spawnRock(
+      id: 'r1',
+      owner: 'mallory',
+      x: 210,
+      y: g.player.y,
+      vx: 0,
+      vy: 0,
+    );
+    check(g.checkRockHits('me'), 'first hit registers');
+    check(g.player.grounded, 'still grounded after first hit');
+    check(g.player.edgeHits == 1, 'edge-hit counted');
+    check(g.player.stun > 0, 'brief stun');
+    check(g.player.x == 363, 'shoved to the nearest step edge');
+    check(!g.checkRockHits('me'), 'each rock hits once');
+    g.spawnRock(
+      id: 'r2',
+      owner: 'mallory',
+      x: 363,
+      y: g.player.y,
+      vx: 0,
+      vy: 0,
+    );
+    check(g.checkRockHits('me'), 'second hit registers');
+    check(!g.player.grounded && g.player.airborne, 'knocked off the step');
+    check(g.player.vy == 140, 'drops downward');
+    check(g.player.edgeHits == 0, 'edge count resets on the fall');
+    g.spawnRock(
+      id: 'r3',
+      owner: 'me',
+      x: g.player.x,
+      y: g.player.y,
+      vx: 0,
+      vy: 0,
+    );
+    check(!g.checkRockHits('me'), 'own rocks harmless');
+  });
+  test('landing clears the edge-hit count', () {
+    final g = fresh();
+    g.player.x = 210;
+    g.spawnRock(
+      id: 'r1',
+      owner: 'mallory',
+      x: 210,
+      y: g.player.y,
+      vx: 0,
+      vy: 0,
+    );
+    g.checkRockHits('me');
+    check(g.player.edgeHits == 1, 'edge-hit counted');
+    g.land(Ledge(0, 45, 640, 330));
+    check(g.player.edgeHits == 0, 'reset on landing');
+    check(g.player.grounded, 'standing again');
+  });
+  test('airborne hit knocks the player straight down', () {
+    final g = fresh();
+    g.player.grounded = false;
+    g.player.airborne = true;
+    g.player.vy = -300;
     g.spawnRock(
       id: 'r1',
       owner: 'mallory',
@@ -218,17 +277,28 @@ void main() {
       vy: 0,
     );
     check(g.checkRockHits('me'), 'hit registers');
-    check(g.player.stun > 0 && g.player.vx != 0, 'stumble impulse');
-    check(!g.checkRockHits('me'), 'each rock hits once');
+    check(g.player.airborne && g.player.vy == 240, 'instant fall');
+    check(!g.player.flip, 'flip cancelled');
+  });
+  test('rocket absorbs the hit and is stripped harmlessly', () {
+    final g = fresh();
+    g.player.rocket = 1.0;
+    g.player.grounded = false;
+    g.player.airborne = true;
+    g.player.vy = -520;
     g.spawnRock(
-      id: 'r2',
-      owner: 'me',
+      id: 'r1',
+      owner: 'mallory',
       x: g.player.x,
       y: g.player.y,
       vx: 0,
       vy: 0,
     );
-    check(!g.checkRockHits('me'), 'own rocks harmless');
+    check(g.checkRockHits('me'), 'hit registers');
+    check(g.player.rocket == 0, 'booster stripped');
+    check(g.player.stun == 0, 'no stun');
+    check(g.player.vx == 0 && g.player.vy == -520, 'flight untouched');
+    check(g.player.airborne && !g.player.grounded, 'keeps flying');
   });
   test('spectator camera follows the leader', () {
     final g = fresh();
@@ -254,11 +324,22 @@ void main() {
     ];
     g.syncRocks(remote, 1000, 'me');
     g.syncRocks(remote, 1100, 'me');
-    check(g.rocks.length == 5, 'shower merged once');
+    check(g.rocks.length == 8, 'shower merged once');
     g.syncRocks([
       {'id': 'b', 'by': 'me', 'x0': 0, 'y0': 0, 'vx': 0, 'vy': 0, 't0': 1100},
     ], 1100, 'me');
-    check(g.rocks.length == 10, 'sender also sees its published shower');
+    check(g.rocks.length == 16, 'sender also sees its published shower');
+  });
+  test('shower count clamps to the 8-15 range', () {
+    final g = fresh();
+    g.syncRocks([
+      {'id': 'a', 'by': 'x', 't0': 1000, 'count': 3, 'seed': 7},
+    ], 1000, 'me');
+    check(g.rocks.length == 8, 'minimum eight');
+    g.syncRocks([
+      {'id': 'b', 'by': 'x', 't0': 1000, 'count': 99, 'seed': 7},
+    ], 1000, 'me');
+    check(g.rocks.length == 8 + 15, 'maximum fifteen');
   });
   test('rematch reset clears rocks for a fresh round', () {
     final g = fresh();

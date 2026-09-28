@@ -580,23 +580,19 @@ class _PlayScreenState extends State<PlayScreen>
         game.attract(1 / 120);
       } else if (game.mode == PlayMode.spectate) {
         game.tickSpectate(1 / 120, _spectateLeaderY());
-        if (race.active) {
-          game.syncRocks(
-            race.throwEvents,
-            race.serverNow,
-            race.uidOrNull ?? '',
-          );
-          _pruneRocksThrottled();
-        }
       } else {
         if (_joyHeld) game.holdJump(_joyDir);
         game.tick(1 / 120);
-        if (race.active && game.mode == PlayMode.playing) {
-          final selfId = race.uidOrNull ?? '';
-          game.syncRocks(race.throwEvents, race.serverNow, selfId);
-          game.checkRockHits(selfId);
-          _pruneRocksThrottled();
-        }
+      }
+      // One shared throw pipeline for live play and spectating alike:
+      // merge network rocks, test hits while playing, prune stale throws.
+      if (race.active &&
+          (game.mode == PlayMode.playing ||
+              game.mode == PlayMode.spectate)) {
+        final selfId = race.uidOrNull ?? '';
+        game.syncRocks(race.throwEvents, race.serverNow, selfId);
+        if (game.mode == PlayMode.playing) game.checkRockHits(selfId);
+        _pruneRocksThrottled();
       }
       if (game.mode == PlayMode.playing && rival != null) {
         rival!.tick(1 / 120, game);
@@ -980,7 +976,7 @@ class _PlayScreenState extends State<PlayScreen>
     searchId = id;
     final deadline = DateTime.now().add(const Duration(seconds: 12));
     searchTimer = Timer(const Duration(seconds: 12), () {
-      if (generation != searchGeneration || !mounted) return;
+      if (generation != searchGeneration || !mounted || !searching) return;
       unawaited(cancelSearch());
       startBot();
     });
@@ -989,6 +985,12 @@ class _PlayScreenState extends State<PlayScreen>
       if (!widget.store.cloud) await widget.store.retryCloud();
       if (generation != searchGeneration || !mounted) return;
       attachAuthListener();
+      final offlineFromStart = !widget.store.cloud;
+      if (offlineFromStart) {
+        // Never fail silently: auth death is the #1 reason searches "find
+        // nobody". The status carries the underlying reason.
+        toast('Offline (${widget.store.status}). Playing practice rival.');
+      }
       // Direct client matchmaking: publish, then the smaller uid creates.
       var createdRoom = false;
       Future<void> tryCreate() async {
@@ -1013,6 +1015,26 @@ class _PlayScreenState extends State<PlayScreen>
         );
         createdRoom = true;
         match = {'status': 'matched', 'code': code};
+        searchTimer?.cancel();
+        // Auto-start together (the old server did this): let the joiner
+        // attach, then start for both sides. Abort cleanly if cancelled.
+        for (var i = 0; i < 10; i++) {
+          await Future<void>.delayed(const Duration(milliseconds: 500));
+          if (generation != searchGeneration || !mounted) {
+            await race.leave();
+            createdRoom = false;
+            match = {'status': 'waiting'};
+            return;
+          }
+        }
+        try {
+          await race.start();
+        } catch (e) {
+          debugPrint('Auto-start failed: $e');
+          await race.leave();
+          createdRoom = false;
+          match = {'status': 'waiting'};
+        }
       }
 
       if (widget.store.cloud) {
@@ -1052,7 +1074,25 @@ class _PlayScreenState extends State<PlayScreen>
         }
         toast('Challenger found. Starting together…');
       } else {
+        debugPrint(
+          'Matchmaking unpaired: mode=${settings.choice} '
+          'target=${settings.raceTarget} cloud=${widget.store.cloud} '
+          'seen=${social.lastQueueTotal} '
+          'compatible=${social.lastQueueCompatible}',
+        );
         startBot();
+        if (!offlineFromStart && widget.store.cloud) {
+          if (social.lastQueueCompatible > 0) {
+            toast('Match failed to start. Playing practice rival.');
+          } else if (social.lastQueueTotal > 0) {
+            toast(
+              'Found ${social.lastQueueTotal} player(s) in other modes. '
+              'Playing practice rival.',
+            );
+          } else {
+            toast('No players searching. Playing practice rival.');
+          }
+        }
       }
     } catch (e) {
       if (generation != searchGeneration || !mounted) return;

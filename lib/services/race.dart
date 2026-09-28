@@ -413,7 +413,7 @@ class RaceService extends ChangeNotifier {
       await node.set({
         'by': uid,
         'round': rematchRound,
-        'count': 5 + Random().nextInt(6),
+        'count': 8 + Random().nextInt(8),
         'seed': Random().nextInt(0x7fffffff),
         'x0': x0,
         'y0': y0,

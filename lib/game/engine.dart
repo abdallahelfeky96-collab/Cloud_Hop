@@ -154,6 +154,7 @@ class Runner {
   bool fallSoundPlayed = false;
   bool grounded = true, airborne = false, flip = false, wall = false;
   double stun = 0;
+  int edgeHits = 0;
 }
 
 /// A boulder thrown by a spectator. Simulated locally from its spawn state;
@@ -318,7 +319,7 @@ class GameEngine {
         continue;
       seenShowers[id] = t0;
       final random = math.Random((m['seed'] as num?)?.toInt() ?? 1);
-      final count = ((m['count'] as num?)?.toInt() ?? 5).clamp(5, 10);
+      final count = ((m['count'] as num?)?.toInt() ?? 8).clamp(8, 15);
       final fromLeft = ((m['vx'] as num?) ?? 1) > 0;
       for (var i = 0; i < count; i++) {
         final speed = 330 + random.nextDouble() * 160;
@@ -364,8 +365,12 @@ class GameEngine {
     rockHits.removeWhere((id) => !rocks.any((r) => r.id == id));
   }
 
-  /// Hit test against the local live player. Each rock hits once; the
-  /// victim stumbles (knockback + brief stun) and may fall off naturally.
+  /// Hit test against the local live player. Each rock hits once.
+  /// Impact depends on state at contact:
+  /// - Rocket flight absorbs the hit: the booster is stripped, nothing else.
+  /// - Grounded, first hit: shoved to the nearest step edge (brief stun).
+  /// - Grounded, second hit while still grounded: knocked off the step.
+  /// - Airborne: knocked straight down immediately.
   bool checkRockHits(String selfId) {
     if (mode != PlayMode.playing) return false;
     final p = player;
@@ -373,22 +378,56 @@ class GameEngine {
     for (final r in rocks) {
       if (r.age < 0 || r.owner == selfId || rockHits.contains(r.id)) continue;
       final dx = r.x - p.x, dy = r.y - p.y;
-      if (dx * dx + dy * dy < math.pow(17 + 10 * r.scale, 2)) {
-        rockHits.add(r.id);
-        stumble(p.x >= r.x ? 1.0 : -1.0);
-        hit = true;
+      if (dx * dx + dy * dy >= math.pow(17 + 10 * r.scale, 2)) continue;
+      rockHits.add(r.id);
+      hit = true;
+      if (p.rocket > 0) {
+        p.rocket = 0;
+        say('ROCKET LOST!');
+        continue;
+      }
+      if (p.grounded) {
+        _hitGrounded(p, r);
+      } else {
+        p.airborne = true;
+        p.flip = false;
+        p.vy = math.max(p.vy, 240);
+        say('KNOCKED DOWN!');
       }
     }
     return hit;
   }
 
-  void stumble(double dir) {
-    if (mode != PlayMode.playing) return;
-    player.vx = dir * 360;
-    player.stun = .9;
+  void _hitGrounded(Runner p, RockThrow r) {
+    Ledge? footing;
+    for (final q in ledges) {
+      if (q.id == p.ledge) {
+        footing = q;
+        break;
+      }
+    }
+    if (footing == null || p.edgeHits > 0) {
+      // Second hit while still grounded (or unknown footing): off the step.
+      p.edgeHits = 0;
+      p.grounded = false;
+      p.airborne = true;
+      p.flight = 0;
+      p.flip = false;
+      p.vy = 140;
+      p.vx = (p.x >= r.x ? 1.0 : -1.0) * 140;
+      say('KNOCKED OFF!');
+      return;
+    }
+    // First hit: shoved to the nearest step edge.
+    final l = footing;
+    final edgeX = p.x < l.x + l.w / 2 ? l.x + 12 : l.x + l.w - 12;
+    p.x = edgeX.clamp(l.x + 4, l.x + l.w - 4);
+    p.vx = 0;
+    p.stun = .9;
     direction = 0;
     moveTime = 0;
     jumpBuffer = 0;
+    p.edgeHits = 1;
     say('HIT!');
   }
 
@@ -564,6 +603,7 @@ class GameEngine {
     p.grounded = true;
     p.fallSoundPlayed = false;
     p.ledge = q.id;
+    p.edgeHits = 0;
     if (q.gift != null && !q.claimed) {
       if (q.gift == 'ad') {
         adGift = q;

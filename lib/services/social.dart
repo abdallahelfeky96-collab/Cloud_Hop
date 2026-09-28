@@ -376,6 +376,11 @@ class SocialService {
     return true;
   }
 
+  /// Diagnostics from the latest queue scan: live opponents seen vs
+  /// mode/target-compatible ones. Lets the UI report WHY no match happened
+  /// (signed out vs empty queue vs wrong mode) instead of failing silently.
+  int lastQueueTotal = 0, lastQueueCompatible = 0;
+
   /// Finds a live, compatible waiting opponent in the queue, if any.
   /// Deterministic smallest id first so both sides agree silently.
   Future<Map<String, String>?> matchScan() async {
@@ -386,6 +391,17 @@ class SocialService {
       final mine = _asNode(all[uid]);
       if (mine == null) return null;
       final now = DateTime.now().millisecondsSinceEpoch;
+      var total = 0, compatible = 0;
+      for (final entry in all.entries) {
+        if (entry.key.toString() == uid) continue;
+        final other = _asNode(entry.value);
+        if (other == null) continue;
+        if (((other['deadline'] as num?) ?? 0).toInt() <= now) continue;
+        total++;
+        if (_compatible(mine, other)) compatible++;
+      }
+      lastQueueTotal = total;
+      lastQueueCompatible = compatible;
       return _scanBest(all, uid, mine, now);
     } catch (e) {
       _fail(e, 'matchmaking');
