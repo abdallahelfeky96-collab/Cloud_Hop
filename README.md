@@ -1,3 +1,7 @@
+# Current delivery: 27 September emergency refactor
+
+Read EMERGENCY_AUDIT.md and SETUP_WITHOUT_CLOUD_FUNCTIONS.md first. Earlier setup notes below are historical; do not ship client signing keys or deploy the archived Functions.
+
 # Cloud Hop — Flutter project, version 0.3
 
 SOURCE-ONLY HANDOFF. No Android APK, app bundle, release, deployment, or account creation has been performed. The final handoff was completed without further dependency installation or test runs after your source-only instruction.
@@ -90,3 +94,4 @@ For live ads later, create your AdMob account/app and units, replace the sample 
 Release signing is intentionally not configured. android/key.properties.example shows the required fields for a future private upload keystore. No build or release was performed. Before any Play Store upload, complete device testing, backend/voice setup, release signing, privacy/data-safety declarations and the current Play Console requirements.
 
 Ads references: https://developers.google.com/admob/flutter/quick-start and https://developers.google.com/admob/flutter/test-ads
+

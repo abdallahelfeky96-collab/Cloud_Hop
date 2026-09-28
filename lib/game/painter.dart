@@ -179,35 +179,111 @@ class GamePainter extends CustomPainter {
         );
       }
 
-      // Short attached arms, slightly longer feet, with restrained opposing swings.
+      final female = character == 'female';
+      final shoe = female ? const Color(0xffed84ae) : const Color(0xfffffff4);
       limb(
-        const Offset(-10, 4),
-        Offset(-11 - swing * 1.5, 10 + lift),
-        Offset(-12 - swing * 2.5, 14 + lift - math.max(0, swing) * 2),
-        7,
+        const Offset(-7, 6),
+        Offset(-8, 11 + lift),
+        Offset(-9 - swing * 2.5, 14 + lift),
+        5,
       );
       limb(
-        const Offset(10, 4),
-        Offset(11 + swing * 1.5, 10 + lift),
-        Offset(12 + swing * 2.5, 14 + lift - math.max(0, -swing) * 2),
-        7,
+        const Offset(7, 6),
+        Offset(8, 11 + lift),
+        Offset(9 + swing * 2.5, 14 + lift),
+        5,
+      );
+      for (final side in [-1.0, 1.0]) {
+        final footX = side * (9 + swing * 2.5);
+        oval(c, footX, 15 + lift, 6, 3.2, const Color(0xff513524));
+        oval(c, footX, 14.6 + lift, 5.1, 2.5, shoe);
+        pill(c, footX - 4, 15.8 + lift, 8, 1.1, Colors.white, 1);
+      }
+      limb(
+        const Offset(-12, -12),
+        Offset(-16, -7 + swing * 2),
+        Offset(-18, -2 + swing * 3),
+        5,
       );
       limb(
-        const Offset(-21, -12),
-        Offset(-26, -9 + swing * 2 + lift),
-        Offset(-29, -6 + swing * 3 + lift),
-        7,
+        const Offset(12, -12),
+        Offset(16, -7 - swing * 2),
+        Offset(18, -2 - swing * 3),
+        5,
       );
-      limb(
-        const Offset(21, -12),
-        Offset(26, -9 - swing * 2 + lift),
-        Offset(29, -6 - swing * 3 + lift),
-        7,
+      final clothes = Path()
+        ..moveTo(-10, -17)
+        ..lineTo(10, -17)
+        ..lineTo(female ? 16 : 12, female ? 9 : 3)
+        ..lineTo(female ? -16 : -12, female ? 9 : 3)
+        ..close();
+      c.drawPath(
+        clothes,
+        Paint()
+          ..color = female ? const Color(0xffffa5c5) : const Color(0xfffffff7),
       );
+      c.drawPath(
+        clothes,
+        Paint()
+          ..color = const Color(0xff664536)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.4,
+      );
+      if (female) {
+        pill(c, -10, -3, 20, 2, const Color(0xffed75a3), 1);
+        for (final x in [-8.0, 0.0, 8.0])
+          c.drawLine(
+            Offset(x * .7, 0),
+            Offset(x, 7),
+            Paint()
+              ..color = const Color(0xfff18fb2)
+              ..strokeWidth = .8,
+          );
+      } else {
+        // Short white sleeves.
+        pill(c, -16, -15, 7, 8, const Color(0xfffffff7), 2);
+        pill(c, 9, -15, 7, 8, const Color(0xfffffff7), 2);
+        // Fitted shirt tailored like the female dress cut: outlined torso
+        // with side seams, then a denim waistband and shorts. No chain.
+        final shirt = Path()
+          ..moveTo(-10, -17)
+          ..lineTo(10, -17)
+          ..lineTo(14, 7)
+          ..lineTo(-14, 7)
+          ..close();
+        c.drawPath(
+          shirt,
+          Paint()..color = const Color(0xfffffff7),
+        );
+        c.drawPath(
+          shirt,
+          Paint()
+            ..color = const Color(0xff664536)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.4,
+        );
+        for (final x in [-8.0, 0.0, 8.0])
+          c.drawLine(
+            Offset(x * .7, -2),
+            Offset(x, 5),
+            Paint()
+              ..color = const Color(0xffa9c6d8)
+              ..strokeWidth = .8,
+          );
+        pill(c, -13, 5, 26, 2.6, const Color(0xff5089af), 1);
+        pill(c, -12, 7, 24, 5, const Color(0xff86bfdf), 2);
+        c.drawLine(
+          const Offset(0, 8),
+          const Offset(0, 12),
+          Paint()
+            ..color = const Color(0xff5089af)
+            ..strokeWidth = 1,
+        );
+      }
       c.drawImageRect(
         characters!,
         CharacterArt.bodyRegion(characters!, character),
-        const Rect.fromLTWH(-32, -49, 64, 60),
+        const Rect.fromLTWH(-27, -59, 54, 49),
         Paint()
           ..filterQuality = FilterQuality.medium
           ..colorFilter = const ColorFilter.matrix([
@@ -234,14 +310,18 @@ class GamePainter extends CustomPainter {
           ]),
       );
       // Small coordinated glances preserve the original friendly expression.
+      // The broader male face carries the eyes slightly wider and lower,
+      // matching their relative placement on the female artwork.
       final lookX = gazeX.clamp(-1.0, 1.0) * .65;
       final lookY = gazeY.clamp(-1.0, 1.0) * .55;
       final blink = !reducedMotion && game.time % 4.6 > 4.45;
-      for (final eyeX in [-9.0, 9.0]) {
+      final eyeSpread = female ? 9.0 : 10.0;
+      final eyeBaseY = female ? -32.0 : -31.0;
+      for (final eyeX in [-eyeSpread, eyeSpread]) {
         oval(
           c,
           eyeX + lookX,
-          -17 + lookY,
+          eyeBaseY + lookY,
           3.1,
           blink ? .65 : 4.2,
           const Color(0xff291701),
@@ -250,7 +330,7 @@ class GamePainter extends CustomPainter {
           oval(
             c,
             eyeX + lookX + .8,
-            -18.7 + lookY,
+            eyeBaseY - 1.7 + lookY,
             .9,
             1.1,
             const Color(0xfffffff3),
@@ -475,8 +555,16 @@ class GamePainter extends CustomPainter {
     for (final r in game.rocks) {
       final y = r.y - game.camera;
       if (y < -30 || y > h + 30) continue;
-      oval(canvas, r.x, y, 10, 10, const Color(0xff6b5a4e));
-      oval(canvas, r.x - 3, y - 3, 4, 4, const Color(0xff9a8878));
+      if (r.age < 0) continue;
+      oval(canvas, r.x, y, 10 * r.scale, 10 * r.scale, const Color(0xff6b5a4e));
+      oval(
+        canvas,
+        r.x - 3 * r.scale,
+        y - 3 * r.scale,
+        4 * r.scale,
+        4 * r.scale,
+        const Color(0xff9a8878),
+      );
     }
     final p = game.player,
         spin = p.flip && p.airborne && !reducedMotion
@@ -494,16 +582,16 @@ class GamePainter extends CustomPainter {
         p.y - game.camera,
         game.progress.skin,
         character: game.character,
-      spin: spin,
-      rocket: p.rocket > 0,
-      face: p.face,
-      stride: stride,
-      lookUp: p.airborne && p.vy < -50,
-      gazeX: p.gazeX,
-      gazeY: p.gazeY,
-      movement: p.airborne ? .65 : (p.vx.abs() / 160).clamp(0.0, 1.0),
-      airborne: p.airborne,
-    );
+        spin: spin,
+        rocket: p.rocket > 0,
+        face: p.face,
+        stride: stride,
+        lookUp: p.airborne && p.vy < -50,
+        gazeX: p.gazeX,
+        gazeY: p.gazeY,
+        movement: p.airborne ? .65 : (p.vx.abs() / 160).clamp(0.0, 1.0),
+        airborne: p.airborne,
+      );
     canvas.restore();
   }
 

@@ -17,11 +17,9 @@ class Progress {
     Set<String>? skins,
     Set<String>? skies,
     Map<String, int>? items,
-   }) : skins = skins ?? {'pip'},
-        skies = skies ?? {'auto'},
-        items =
-            items ??
-            {'rocket': 1, 'life': 1, 'spring': 1, 'rock': 0};
+  }) : skins = skins ?? {'pip'},
+       skies = skies ?? {'auto'},
+       items = items ?? {'rocket': 1, 'life': 1, 'spring': 1, 'rock': 0};
   Map<String, dynamic> toJson() => {
     'coins': coins,
     'best': best,
@@ -91,10 +89,10 @@ const products = [
   ),
   Product(
     'rock',
-    'Rock',
+    'Rocks',
     'items',
-    600,
-    'Ammo for spectator throws. Cheaper than 2000 coins a throw.',
+    500,
+    'One spectator rock shower (5-10 boulders). Stock up before the round.',
   ),
   Product('pip', 'Original Pip', 'skins', 0, 'The original explorer.'),
   Product('mint', 'Froggy Pip', 'skins', 100, 'A bright green frog hat.'),
@@ -164,6 +162,7 @@ class Runner {
 class RockThrow {
   final String id, owner;
   double x, y, vx, vy, age;
+  double scale = 1;
   RockThrow(
     this.id,
     this.owner,
@@ -177,9 +176,11 @@ class RockThrow {
 
 class GameEngine {
   static const gravity = 2200.0, maxRun = 300.0, width = 420.0;
-  static const rockGravity = 1500.0, rockTtl = 2.8, rockHitRadius = 27.0;
+  static const rockGravity = 0.0, rockTtl = 8.0, rockHitRadius = 27.0;
   final List<RockThrow> rocks = [];
   final Set<String> rockHits = {};
+  final Map<String, int> seenShowers = {};
+  double movementDistance = 0;
   final Progress progress;
   final void Function()? onChanged, onEnd;
   final void Function(String)? onSound;
@@ -235,6 +236,8 @@ class GameEngine {
     awaitingFinish = false;
     rocks.clear();
     rockHits.clear();
+    seenShowers.clear();
+    movementDistance = 0;
     adRevived = false;
     adGift = null;
     message = '';
@@ -306,34 +309,59 @@ class GameEngine {
   /// Own throws are simulated locally from the tap, so [selfId]'s rocks are
   /// skipped here to avoid double simulation under a different id.
   void syncRocks(List<Map<String, dynamic>> remote, int nowMs, String selfId) {
+    seenShowers.removeWhere((_, at) => nowMs - at > 60000);
     for (final m in remote) {
       final id = m['id']?.toString() ?? '';
-      if (id.isEmpty ||
-          (m['by'] ?? '').toString() == selfId ||
-          rocks.any((r) => r.id == id)) {
+      final t0 = (m['t0'] as num?)?.toInt() ?? 0;
+      final age = (nowMs - t0) / 1000;
+      if (id.isEmpty || seenShowers.containsKey(id) || age < 0 || age > rockTtl)
         continue;
+      seenShowers[id] = t0;
+      final random = math.Random((m['seed'] as num?)?.toInt() ?? 1);
+      final count = ((m['count'] as num?)?.toInt() ?? 5).clamp(5, 10);
+      final fromLeft = ((m['vx'] as num?) ?? 1) > 0;
+      for (var i = 0; i < count; i++) {
+        final speed = 330 + random.nextDouble() * 160;
+        final vx = (fromLeft ? 1 : -1) * speed * .42;
+        final vy = speed;
+        final delay = i * .12;
+        final flight = math.max(0.0, age - delay);
+        final x =
+            (fromLeft ? 5.0 : 415.0) +
+            (fromLeft ? 1 : -1) * random.nextDouble() * 120;
+        final y =
+            ((m['y0'] as num?)?.toDouble() ?? camera - 40) -
+            random.nextDouble() * 45;
+        final rock = RockThrow(
+          '$id:$i',
+          (m['by'] ?? '').toString(),
+          x + vx * flight,
+          y + vy * flight,
+          vx,
+          vy,
+          age - delay,
+        )..scale = .3 + random.nextDouble() * 2.2;
+        rocks.add(rock);
       }
-      final t0 = (m['t0'] as num?)?.toInt() ?? nowMs;
-      spawnRock(
-        id: id,
-        owner: (m['by'] ?? '').toString(),
-        x: (m['x0'] as num?)?.toDouble() ?? 210,
-        y: (m['y0'] as num?)?.toDouble() ?? 0,
-        vx: (m['vx'] as num?)?.toDouble() ?? 0,
-        vy: (m['vy'] as num?)?.toDouble() ?? 500,
-        age: math.max(0, (nowMs - t0) / 1000),
-      );
     }
   }
 
   void stepRocks(double dt) {
     for (final r in rocks) {
       r.age += dt;
+      if (r.age < 0) continue;
       r.vy += rockGravity * dt;
       r.x += r.vx * dt;
       r.y += r.vy * dt;
     }
-    rocks.removeWhere((r) => r.age > rockTtl);
+    rocks.removeWhere(
+      (r) =>
+          r.age > rockTtl ||
+          r.y > camera + viewHeight ||
+          (r.vx > 0 && r.x > width) ||
+          (r.vx < 0 && r.x < 0),
+    );
+    rockHits.removeWhere((id) => !rocks.any((r) => r.id == id));
   }
 
   /// Hit test against the local live player. Each rock hits once; the
@@ -343,9 +371,9 @@ class GameEngine {
     final p = player;
     var hit = false;
     for (final r in rocks) {
-      if (r.owner == selfId || rockHits.contains(r.id)) continue;
+      if (r.age < 0 || r.owner == selfId || rockHits.contains(r.id)) continue;
       final dx = r.x - p.x, dy = r.y - p.y;
-      if (dx * dx + dy * dy < rockHitRadius * rockHitRadius) {
+      if (dx * dx + dy * dy < math.pow(17 + 10 * r.scale, 2)) {
         rockHits.add(r.id);
         stumble(p.x >= r.x ? 1.0 : -1.0);
         hit = true;
@@ -683,6 +711,7 @@ class GameEngine {
     final gazeBlend = 1 - math.exp(-12 * dt);
     p.gazeX += (lookX - p.gazeX) * gazeBlend;
     p.gazeY += (lookY - p.gazeY) * gazeBlend;
+    movementDistance += p.vx.abs() * dt;
     p.x += p.vx * dt;
     if (p.rocket > 0) {
       p.y -= 520 * dt;
@@ -723,26 +752,6 @@ class GameEngine {
     if (highest >= 1) camera -= beltSpeed * dt;
     generate();
     stepRocks(dt);
-    // Natural falling-rock hazards during normal gameplay.
-    rockTimer -= dt;
-    if (rockTimer <= 0) {
-      rockTimer = 6 + math.Random().nextDouble() * 6;
-      var wild = 0;
-      for (final r in rocks) {
-        if (r.owner == 'wild') wild++;
-      }
-      if (wild < 3) {
-        final rx = 40 + math.Random().nextDouble() * 340;
-        spawnRock(
-          id: 'wild_${time.toInt()}_${rx.toInt()}',
-          owner: 'wild',
-          x: rx,
-          y: camera - 40,
-          vx: (math.Random().nextDouble() - .5) * 160,
-          vy: 250,
-        );
-      }
-    }
     ledges.removeWhere((q) => q.y > camera + viewHeight + 50);
     if (p.airborne &&
         p.vy > 0 &&

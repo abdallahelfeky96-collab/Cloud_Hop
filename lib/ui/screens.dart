@@ -586,7 +586,7 @@ class HomeOverlay extends StatelessWidget {
   final bool authBusy, isGoogle, googleBusy;
   final int? reviveSeconds;
   final String? spectateLeader, voiceLabel, voiceBadge;
-  final bool spectateHost, rematchWaiting;
+  final bool spectateHost, rematchWaiting, inRace;
   final int spectateVotes, rockAmmo;
   final VoidCallback play,
       home,
@@ -597,8 +597,7 @@ class HomeOverlay extends StatelessWidget {
       preferences,
       profile,
       cancelSearch;
-  final VoidCallback? google, revive, decline, rematch, voiceToggle,
-      throwRock;
+  final VoidCallback? google, revive, decline, rematch, voiceToggle, throwRock;
   const HomeOverlay({
     super.key,
     required this.mode,
@@ -623,6 +622,7 @@ class HomeOverlay extends StatelessWidget {
     this.spectateHost = false,
     this.spectateVotes = 0,
     this.rockAmmo = 0,
+    this.inRace = false,
     this.rematchWaiting = false,
     this.voiceLabel,
     this.voiceBadge,
@@ -806,7 +806,9 @@ class HomeOverlay extends StatelessWidget {
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              rematchWaiting ? 'Waiting for host…' : 'Play again',
+                              rematchWaiting
+                                  ? 'Waiting for host…'
+                                  : 'Play again',
                               style: const TextStyle(
                                 fontSize: 23,
                                 color: ink,
@@ -899,9 +901,7 @@ class HomeOverlay extends StatelessWidget {
                           fontSize: 25,
                           color: ink,
                           fontWeight: FontWeight.w800,
-                          shadows: [
-                            Shadow(color: Colors.white, blurRadius: 8),
-                          ],
+                          shadows: [Shadow(color: Colors.white, blurRadius: 8)],
                         ),
                       ),
                       const SizedBox(height: 4),
@@ -913,14 +913,12 @@ class HomeOverlay extends StatelessWidget {
                       ),
                       const SizedBox(height: 8),
                       const Text(
-                        'Tap the sky to drop rocks!',
+                        'Send a diagonal meteor shower',
                         style: TextStyle(color: ink, fontSize: 12),
                       ),
                       const SizedBox(height: 8),
                       FilledButton.icon(
-                        onPressed: UiSounds.wrap(
-                          busy ? null : throwRock,
-                        ),
+                        onPressed: UiSounds.wrap(busy ? null : throwRock),
                         style: FilledButton.styleFrom(
                           minimumSize: const Size(230, 58),
                         ),
@@ -930,8 +928,8 @@ class HomeOverlay extends StatelessWidget {
                         ),
                         label: Text(
                           rockAmmo > 0
-                              ? 'Throw Rock (1 rock)'
-                              : 'Throw Rock (2000 coins)',
+                              ? 'Throw Rocks ($rockAmmo left)'
+                              : 'Throw Rocks (500 coins each)',
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -1029,10 +1027,7 @@ class HomeOverlay extends StatelessWidget {
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        const CartoonIcon(
-                          Icons.monetization_on,
-                          size: 18,
-                        ),
+                        const CartoonIcon(Icons.monetization_on, size: 18),
                         Text(
                           ' $coins   ·   ',
                           style: const TextStyle(
@@ -1055,15 +1050,24 @@ class HomeOverlay extends StatelessWidget {
                       ],
                     ),
                   const SizedBox(height: 10),
-                  if (reviveSeconds == null && mode != PlayMode.spectate)
+                  if (reviveSeconds == null)
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        ActionOrb(
-                          Icons.shopping_bag_rounded,
-                          'Shop',
-                          busy || searching ? null : shop,
-                        ),
+                        if (inRace)
+                          ActionOrb(
+                            Icons.circle,
+                            'Throw rocks',
+                            busy || searching ? null : throwRock,
+                            badge: '$rockAmmo',
+                            color: const Color(0xff6b5a4e),
+                          )
+                        else
+                          ActionOrb(
+                            Icons.shopping_bag_rounded,
+                            'Shop',
+                            busy || searching ? null : shop,
+                          ),
                         ActionOrb(
                           Icons.people_alt_rounded,
                           'Friends & invitations',

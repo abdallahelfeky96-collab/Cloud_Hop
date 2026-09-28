@@ -1,0 +1,11 @@
+{
+  "name": "cloud-hop-fcm-relay",
+  "private": true,
+  "description": "Self-hosted FCM HTTP v1 relay for Cloud Hop invites/requests/matches. Runs on your own server, not Firebase. Needs a service-account key file beside it (never commit it).",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0"
+  }
+}

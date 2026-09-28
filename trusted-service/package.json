@@ -1,0 +1,16 @@
+{
+  "name": "cloud-hop-trusted-service",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "firebase-admin": "^13.0.0",
+    "google-auth-library": "^9.15.0",
+    "livekit-server-sdk": "^2.0.0"
+  }
+}

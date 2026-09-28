@@ -1,14 +1,10 @@
-import 'dart:async';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
-import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../game/challenge.dart';
 import '../config.dart';
-import 'fcm_sender.dart';
 import 'firebase_errors.dart';
 import 'progress_store.dart';
 
@@ -152,9 +148,7 @@ class SocialService {
               'from': e.key.toString(),
             },
           )
-          .where(
-            (m) => ((m['expiresAt'] as num?) ?? 0).toInt() > now,
-          )
+          .where((m) => ((m['expiresAt'] as num?) ?? 0).toInt() > now)
           .toList();
     } catch (e) {
       _fail(e, 'invitations');
@@ -188,8 +182,8 @@ class SocialService {
       await _db
           .child('friendships/$pair')
           .set({
-            'a': pair.split('_').first,
-            'b': pair.split('_').last,
+            'a': uid.compareTo(clean) <= 0 ? uid : clean,
+            'b': uid.compareTo(clean) <= 0 ? clean : uid,
             'from': uid,
             'status': 'pending',
             'updatedAt': now,
@@ -217,16 +211,10 @@ class SocialService {
             'updatedAt': now,
           })
           .timeout(_timeout);
-      // Best-effort direct push; never blocks the sheet on failure.
-      unawaited(
-        FcmSender.friendRequest(
-          toUid: clean,
-          fromUid: uid,
-          fromName: myName,
-        ).then((sent) {
-          if (!sent) debugPrint('FCM friend-request skipped (no sender key).');
-        }),
-      );
+      // NOTE: background delivery is handled by the self-hosted relay
+      // (tools/fcm-relay-v1.js), which watches this same mirror node.
+      // No push call happens here: FCM sends need server credentials that
+      // must never ship inside the app.
       return 'sent';
     } on StateError {
       rethrow;
@@ -241,7 +229,8 @@ class SocialService {
     try {
       final pair = pairId(uid, other);
       final snap = await _db.child('friendships/$pair').get().timeout(_timeout);
-      if (!snap.exists) throw StateError('This request is no longer available.');
+      if (!snap.exists)
+        throw StateError('This request is no longer available.');
       final data = Map<String, dynamic>.from(snap.value as Map);
       if (data['status'] == 'accepted') {
         // Already accepted: just refresh mirrors below.
@@ -285,7 +274,10 @@ class SocialService {
   Future<void> removeFriend(String other) async {
     final uid = _uid();
     try {
-      await _db.child('friendships/${pairId(uid, other)}').remove().timeout(_timeout);
+      await _db
+          .child('friendships/${pairId(uid, other)}')
+          .remove()
+          .timeout(_timeout);
       await _db.child('userFriends/$uid/$other').remove().timeout(_timeout);
       await _db.child('userFriends/$other/$uid').remove().timeout(_timeout);
     } catch (e) {
@@ -320,15 +312,8 @@ class SocialService {
             'expiresAt': now + 300000,
           })
           .timeout(_timeout);
-      unawaited(
-        FcmSender.invite(
-          toUid: other,
-          code: cleanCode,
-          fromName: myName,
-        ).then((sent) {
-          if (!sent) debugPrint('FCM invite skipped (no sender key).');
-        }),
-      );
+      // Background delivery is handled by the self-hosted relay watching
+      // this same invites node (tools/fcm-relay-v1.js).
     } on StateError {
       rethrow;
     } catch (e) {
@@ -422,7 +407,8 @@ class SocialService {
       if (((other['deadline'] as num?) ?? 0).toInt() <= now) continue;
       if (!_compatible(mine, other)) continue;
       final name = (other['name'] ?? 'Player').toString();
-      if (best == null || id.compareTo(best['id']!) < 0) best = {'id': id, 'name': name};
+      if (best == null || id.compareTo(best['id']!) < 0)
+        best = {'id': id, 'name': name};
     }
     return best;
   }
@@ -446,11 +432,8 @@ class SocialService {
             },
           })
           .timeout(_timeout);
-      unawaited(
-        FcmSender.matchFound(toUid: peerId, code: code).then((sent) {
-          if (!sent) debugPrint('FCM match skipped (no sender key).');
-        }),
-      );
+      // Background delivery is handled by the self-hosted relay watching
+      // matched queue nodes (tools/fcm-relay-v1.js).
     } catch (e) {
       _fail(e, 'matchmaking');
     }
@@ -471,7 +454,12 @@ class SocialService {
       }
       for (final entry in all.entries) {
         final node = _asNode(entry.value);
-        if (node == null || node['status'] != 'matched') continue;
+        if (node == null ||
+            node['status'] != 'matched' ||
+            mine == null ||
+            ((node['createdAt'] as num?) ?? 0) <
+                ((mine['createdAt'] as num?) ?? 0) - 12000)
+          continue;
         final match = _asNode(node['match']);
         final participants = _asNode(match?['participants']);
         if (match != null &&

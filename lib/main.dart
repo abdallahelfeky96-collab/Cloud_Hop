@@ -11,6 +11,7 @@ import 'ui/ui_sounds.dart';
 import 'dart:math' as math;
 
 import 'package:firebase_auth/firebase_auth.dart';
+import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter/material.dart';
@@ -20,6 +21,7 @@ import 'package:flutter/services.dart';
 
 import 'config.dart';
 import 'game/engine.dart';
+import 'game/match_result.dart';
 import 'game/painter.dart';
 import 'services/ads.dart';
 import 'services/game_audio.dart';
@@ -59,6 +61,7 @@ Future<void> applyGameDisplay() async {
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  FirebaseMessaging.onBackgroundMessage(pushBackgroundHandler);
   await SystemChrome.setPreferredOrientations([DeviceOrientation.portraitUp]);
   await applyGameDisplay();
   final store = ProgressStore(),
@@ -266,31 +269,36 @@ class _PlayScreenState extends State<PlayScreen>
   /// for invites and friend requests while the app is open.
   Future<void> _initPush() async {
     try {
-      await push.init();
       _pushLinksSub = push.links.listen(_handlePushLink);
       _pushMsgsSub = push.foreground.listen(_showPushDialog);
+      await push.init();
       _attachRealtimeOverlays();
     } catch (e) {
       debugPrint('Push overlays: $e');
     }
   }
 
-  /// Deep link from a tapped notification: join the room or open friends.
+  /// Deep link from a tapped notification: explicit Accept/Decline pop-ups
+  /// for invites, friend requests and accepted requests. Matches auto-join.
   Future<void> _handlePushLink(Map<String, String> data) async {
-    if (!mounted) return;
+    if (!mounted || _overlayOpen) return;
+    if (expiredPush(data)) {
+      toast('Invite Expired');
+      return;
+    }
     final kind = data['kind'];
-    if (kind == 'invite' || kind == 'match') {
+    if (kind == 'invite') {
+      final code = (data['code'] ?? '').trim();
+      if (code.isEmpty) return;
+      _inviteDialog(data);
+      return;
+    }
+    if (kind == 'match') {
       final code = (data['code'] ?? '').trim();
       if (code.isEmpty || race.active) return;
       try {
-        await race.enter(
-          name: settings.name,
-          joinCode: code.length == 6 ? code : null,
-        );
+        await race.attachMatch(code);
         raceStarted = false;
-        if (kind == 'match') {
-          await race.attachMatch(code);
-        }
         toast('Joining room $code…');
         await showRace();
       } catch (e) {
@@ -300,90 +308,173 @@ class _PlayScreenState extends State<PlayScreen>
       return;
     }
     if (kind == 'friend-request') {
-      await showFriends();
+      final from = (data['fromUid'] ?? data['from'] ?? '').trim();
+      final name = (data['fromName'] ?? 'Someone').trim();
+      if (from.isEmpty) return;
+      _friendRequestDialog(from, name);
+      return;
+    }
+    if (kind == 'friend-accepted') {
+      final name = (data['fromName'] ?? 'Someone').trim();
+      _friendAcceptedDialog(name);
     }
   }
 
-  void _showPushDialog(Map<String, String> data) {
+  /// Shared join flow for an accepted invite: validates the room, then joins.
+  Future<void> _joinFromInvite(Map<String, String> data) async {
+    if (!mounted) return;
+    final code = (data['code'] ?? '').trim();
+    if (code.isEmpty || race.active) return;
+    try {
+      if (!RegExp(r'^[A-Z0-9]{6,80}$').hasMatch(code)) {
+        toast('Invite Expired');
+        return;
+      }
+      final snapshot = await FirebaseDatabase.instance.ref('rooms/$code').get();
+      final room = snapshot.value;
+      if (room is! Map || room['result'] != null || room['startAt'] != null) {
+        toast('Invite Expired');
+        return;
+      }
+      await race.enter(
+        name: settings.name,
+        joinCode: code,
+        character: settings.character,
+      );
+      raceStarted = false;
+      toast('Joining room $code…');
+      await showRace();
+    } catch (e) {
+      debugPrint('Push join failed: $e');
+      toast('Could not join room $code.');
+    }
+  }
+
+  void _inviteDialog(Map<String, String> data) {
     if (!mounted || _overlayOpen) return;
+    final code = (data['code'] ?? '').trim();
+    final from = (data['fromName'] ?? 'A friend').trim();
+    final fromUid = (data['fromUid'] ?? data['from'] ?? '').trim();
+    if (code.isEmpty) return;
+    _overlayOpen = true;
+    showDialog<void>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('Room invitation'),
+        content: Text('$from invited you to room $code.'),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              _overlayOpen = false;
+              Navigator.pop(dialog);
+              if (fromUid.isNotEmpty) {
+                try {
+                  await social.dismissInvite(fromUid);
+                } catch (e) {
+                  debugPrint('Decline invite: $e');
+                }
+              }
+            },
+            child: const Text('Decline'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              _overlayOpen = false;
+              Navigator.pop(dialog);
+              await _joinFromInvite(data);
+            },
+            child: const Text('Accept'),
+          ),
+        ],
+      ),
+    ).then((_) => _overlayOpen = false);
+  }
+
+  void _friendRequestDialog(String fromUid, String name) {
+    if (!mounted || _overlayOpen) return;
+    _overlayOpen = true;
+    showDialog<void>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('Friend request'),
+        content: Text('$name wants to be your friend.'),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              _overlayOpen = false;
+              Navigator.pop(dialog);
+              try {
+                await social.removeFriend(fromUid);
+              } catch (e) {
+                debugPrint('Decline request: $e');
+              }
+            },
+            child: const Text('Decline'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              _overlayOpen = false;
+              Navigator.pop(dialog);
+              try {
+                await social.acceptFriend(fromUid);
+                toast('$name is now your friend');
+              } catch (e) {
+                toast('Could not accept request.');
+              }
+            },
+            child: const Text('Accept'),
+          ),
+        ],
+      ),
+    ).then((_) => _overlayOpen = false);
+  }
+
+  void _friendAcceptedDialog(String name) {
+    if (!mounted || _overlayOpen) return;
+    _overlayOpen = true;
+    showDialog<void>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('Friend request accepted'),
+        content: Text('$name is now your friend.'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              _overlayOpen = false;
+              Navigator.pop(dialog);
+            },
+            child: const Text('Close'),
+          ),
+          FilledButton(
+            onPressed: () async {
+              _overlayOpen = false;
+              Navigator.pop(dialog);
+              await showFriends();
+            },
+            child: const Text('View friends'),
+          ),
+        ],
+      ),
+    ).then((_) => _overlayOpen = false);
+  }
+
+  /// Foreground pushes reuse the exact same Accept/Decline pop-ups as taps.
+  void _showPushDialog(Map<String, String> data) {
+    if (!mounted || _overlayOpen || expiredPush(data)) return;
     final kind = data['kind'];
     if (kind == 'invite') {
-      final code = (data['code'] ?? '').trim();
-      final from = (data['fromName'] ?? 'A friend').trim();
-      if (code.isEmpty) return;
-      _overlayOpen = true;
-      showDialog<void>(
-        context: context,
-        builder: (dialog) => AlertDialog(
-          title: const Text('Room invitation'),
-          content: Text('$from invited you to room $code.'),
-          actions: [
-            TextButton(
-              onPressed: () {
-                _overlayOpen = false;
-                Navigator.pop(dialog);
-              },
-              child: const Text('Decline'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                _overlayOpen = false;
-                Navigator.pop(dialog);
-                if (race.active) return;
-                try {
-                  await race.enter(name: settings.name, joinCode: code);
-                  raceStarted = false;
-                  await showRace();
-                } catch (e) {
-                  toast('Could not join room $code.');
-                }
-              },
-              child: const Text('Accept'),
-            ),
-          ],
-        ),
-      ).then((_) => _overlayOpen = false);
+      _inviteDialog(data);
       return;
     }
     if (kind == 'friend-request') {
-      final from = (data['from'] ?? '').trim();
+      final from = (data['fromUid'] ?? data['from'] ?? '').trim();
       final name = (data['fromName'] ?? 'Someone').trim();
       if (from.isEmpty) return;
-      _overlayOpen = true;
-      showDialog<void>(
-        context: context,
-        builder: (dialog) => AlertDialog(
-          title: const Text('Friend request'),
-          content: Text('$name wants to be your friend.'),
-          actions: [
-            TextButton(
-              onPressed: () async {
-                _overlayOpen = false;
-                Navigator.pop(dialog);
-                try {
-                  await social.removeFriend(from);
-                } catch (e) {
-                  debugPrint('Decline request: $e');
-                }
-              },
-              child: const Text('Decline'),
-            ),
-            FilledButton(
-              onPressed: () async {
-                _overlayOpen = false;
-                Navigator.pop(dialog);
-                try {
-                  await social.acceptFriend(from);
-                  toast('$name is now your friend');
-                } catch (e) {
-                  toast('Could not accept request.');
-                }
-              },
-              child: const Text('Accept'),
-            ),
-          ],
-        ),
-      ).then((_) => _overlayOpen = false);
+      _friendRequestDialog(from, name);
+      return;
+    }
+    if (kind == 'friend-accepted') {
+      _friendAcceptedDialog((data['fromName'] ?? 'Someone').trim());
     }
   }
 
@@ -394,62 +485,76 @@ class _PlayScreenState extends State<PlayScreen>
     _invitesAttached = true;
     final uid = widget.store.uidOrNull;
     if (uid == null) return;
-    _invitesSub = FirebaseDatabase.instance
-        .ref('invites/$uid')
-        .onValue
-        .listen(
-          (event) {
-            if (!mounted) return;
-            final map = event.snapshot.value as Map? ?? {};
-            final now = DateTime.now().millisecondsSinceEpoch;
-            for (final entry in map.entries) {
-              if (entry.value is! Map) continue;
-              final m = Map<String, dynamic>.from(entry.value as Map);
-              final code = (m['code'] ?? '').toString();
-              final from = (m['from'] ?? entry.key).toString();
-              if (code.isEmpty ||
-                  ((m['expiresAt'] as num?) ?? 0).toInt() <= now) {
-                continue;
-              }
-              final key = 'invite:$from:$code';
-              if (_seenPushKeys.contains(key)) continue;
-              _seenPushKeys.add(key);
-              _showPushDialog({
-                'kind': 'invite',
-                'code': code,
-                'from': from,
-                'fromName': (m['name'] ?? 'A friend').toString(),
-              });
-              break;
-            }
-          },
-          onError: (Object e) => debugPrint('Invite watch: $e'),
-        );
+    _invitesSub = FirebaseDatabase.instance.ref('invites/$uid').onValue.listen((
+      event,
+    ) {
+      if (!mounted) return;
+      final map = event.snapshot.value as Map? ?? {};
+      final now = DateTime.now().millisecondsSinceEpoch;
+      for (final entry in map.entries) {
+        if (entry.value is! Map) continue;
+        final m = Map<String, dynamic>.from(entry.value as Map);
+        final code = (m['code'] ?? '').toString();
+        final from = (m['from'] ?? entry.key).toString();
+        if (code.isEmpty || ((m['expiresAt'] as num?) ?? 0).toInt() <= now) {
+          continue;
+        }
+        final key = 'invite:$from:$code';
+        if (_seenPushKeys.contains(key)) continue;
+        _seenPushKeys.add(key);
+        _showPushDialog({
+          'kind': 'invite',
+          'code': code,
+          'from': from,
+          'fromName': (m['name'] ?? 'A friend').toString(),
+        });
+        break;
+      }
+    }, onError: (Object e) => debugPrint('Invite watch: $e'));
     _friendsSub = FirebaseDatabase.instance
         .ref('userFriends/$uid')
         .onValue
-        .listen(
-          (event) {
-            if (!mounted) return;
-            final map = event.snapshot.value as Map? ?? {};
-            for (final entry in map.entries) {
-              if (entry.value is! Map) continue;
-              final m = Map<String, dynamic>.from(entry.value as Map);
-              if (m['status'] != 'pending' || m['incoming'] != true) continue;
-              final from = entry.key.toString();
-              final key = 'friend:$from';
-              if (_seenPushKeys.contains(key)) continue;
-              _seenPushKeys.add(key);
-              _showPushDialog({
-                'kind': 'friend-request',
-                'from': from,
-                'fromName': (m['name'] ?? 'Someone').toString(),
-              });
-              break;
+        .listen((event) {
+          if (!mounted) return;
+          final map = event.snapshot.value as Map? ?? {};
+          final now = DateTime.now().millisecondsSinceEpoch;
+          for (final entry in map.entries) {
+            if (entry.value is! Map) continue;
+            final m = Map<String, dynamic>.from(entry.value as Map);
+            if (m['status'] != 'pending' || m['incoming'] != true) continue;
+            final from = entry.key.toString();
+            final key = 'friend:$from';
+            if (_seenPushKeys.contains(key)) continue;
+            _seenPushKeys.add(key);
+            _showPushDialog({
+              'kind': 'friend-request',
+              'fromUid': from,
+              'fromName': (m['name'] ?? 'Someone').toString(),
+            });
+            break;
+          }
+          // Fresh acceptances of MY outgoing requests (updated in the last
+          // minute): the other side just accepted — tell me once.
+          for (final entry in map.entries) {
+            if (entry.value is! Map) continue;
+            final m = Map<String, dynamic>.from(entry.value as Map);
+            if (m['status'] != 'accepted') continue;
+            if (((m['updatedAt'] as num?) ?? 0).toInt() <=
+                now - 60000) {
+              continue;
             }
-          },
-          onError: (Object e) => debugPrint('Friend watch: $e'),
-        );
+            final other = entry.key.toString();
+            final key = 'accepted:$other:${m['updatedAt']}';
+            if (_seenPushKeys.contains(key)) continue;
+            _seenPushKeys.add(key);
+            _showPushDialog({
+              'kind': 'friend-accepted',
+              'fromUid': other,
+              'fromName': (m['name'] ?? 'Someone').toString(),
+            });
+            break;
+          }
+        }, onError: (Object e) => debugPrint('Friend watch: $e'));
   }
 
   void syncAudio() => gameAudio.sync(
@@ -502,7 +607,12 @@ class _PlayScreenState extends State<PlayScreen>
           resultOutcome = game.highest >= settings.raceTarget ? 1 : -1;
           game.end(allowRescue: false);
         } else if (runChoice == GameChoice.arcade && opponent.out) {
-          resultOutcome = 1;
+          resultOutcome =
+              game.highest == 0 &&
+                  game.movementDistance == 0 &&
+                  opponent.step > 0
+              ? -1
+              : 1;
           game.end(allowRescue: false);
         }
       }
@@ -512,7 +622,7 @@ class _PlayScreenState extends State<PlayScreen>
   }
 
   void raceChanged() {
-    if (race.error != null && voice.connected) unawaited(voice.leave());
+    // Transient database errors do not tear down independent voice transport.
     if (mounted) setState(() {});
   }
 
@@ -521,7 +631,7 @@ class _PlayScreenState extends State<PlayScreen>
       _voicePreconnectedFor = null;
       return;
     }
-    // Background voice pre-connect (muted): mic taps then unmute instantly.
+    // Shared room pre-connect; mute/unmute avoids reconnecting the room.
     preconnectVoice();
     if (race.error != null && race.room.isEmpty) {
       final message = race.error!;
@@ -569,32 +679,6 @@ class _PlayScreenState extends State<PlayScreen>
       else if (!endAd && audioFeedbackRound != audioRound)
         unawaited(finishRun());
     }
-    if (raceStarted && !race.finished) {
-      // Last-player-standing fallback when the server result is missing:
-      // arcade settles immediately, race mode waits for finishers briefly.
-      // Requires at least one elimination so the pre-start lobby (all
-      // 'ready') can never trigger it.
-      final selfId = race.uidOrNull;
-      final othersLive = race.livePeers
-          .where((p) => p['id'] != selfId)
-          .toList();
-      final anyDecided = race.peers.any(
-        (p) => p['status'] == 'out' || p['status'] == 'finished',
-      );
-      final anyFinished = race.peers.any((p) => p['status'] == 'finished');
-      if (anyDecided && othersLive.isEmpty) {
-        final now = race.serverNow;
-        if (_allDecidedAtMs == 0) _allDecidedAtMs = now;
-        final graceOk =
-            race.arcade || !anyFinished || now - _allDecidedAtMs > 8000;
-        if (graceOk &&
-            (game.mode == PlayMode.playing || game.mode == PlayMode.spectate)) {
-          _finishRoundLocally();
-        }
-      } else {
-        _allDecidedAtMs = 0;
-      }
-    }
     if (raceStarted &&
         !race.arcade &&
         game.highest >= race.target &&
@@ -621,6 +705,7 @@ class _PlayScreenState extends State<PlayScreen>
           state == AppLifecycleState.detached ||
           state == AppLifecycleState.hidden) {
         unawaited(voice.leave());
+        _voicePreconnectedFor = null;
       }
       if (!race.active && game.mode == PlayMode.playing) {
         game.mode = PlayMode.paused;
@@ -632,6 +717,43 @@ class _PlayScreenState extends State<PlayScreen>
   /// First game-over per run offers a 5s revive countdown; live races and
   /// repeat game-overs go straight to the regular (interstitial) ad flow.
   Future<void> handleGameOver() async {
+    if (race.active && !race.finished) {
+      // Publish spectator immediately; never route elimination through results/ads.
+      game.enterSpectate();
+      await race.send(game);
+      if (!mounted) return;
+      _maybeSettleRound();
+      setState(() {});
+      return;
+    }
+    if (rival != null && resultOutcome == null) {
+      final decision = evaluateMatch(
+        [
+          {
+            'id': 'self',
+            'step': game.highest,
+            'score': game.points,
+            'movement': game.movementDistance.round(),
+            'status': 'out',
+            'finishedAt': game.highest >= settings.raceTarget ? 1 : 0,
+          },
+          {
+            'id': 'rival',
+            'step': rival!.step.toInt(),
+            'status': rival!.out ? 'out' : 'live',
+            'finishedAt': rival!.step >= settings.raceTarget ? 2 : 0,
+          },
+        ],
+        target: settings.raceTarget,
+        arcade: runChoice == GameChoice.arcade,
+      );
+      // A frozen bot cannot win by survival: out-climbing it decides.
+      resultOutcome = decideBotOutcome(
+        decision: decision,
+        selfSteps: game.highest,
+        rivalSteps: rival!.step,
+      );
+    }
     final endedRound = audioRound;
     if (resultOutcome != 1 && resultOutcome != 0) {
       audioFeedbackRound = endedRound;
@@ -645,23 +767,6 @@ class _PlayScreenState extends State<PlayScreen>
         return;
     }
     audioFeedbackRound = -1;
-    if (race.active && !race.finished) {
-      // Personal fall, round continues: spectate while others stand,
-      // otherwise settle locally. Never leaves the room.
-      unawaited(race.send(game));
-      final selfId = race.uidOrNull;
-      final othersLive = race.livePeers
-          .where((p) => p['id'] != selfId)
-          .toList();
-      if (othersLive.isNotEmpty) {
-        game.enterSpectate();
-        game.say('SPECTATING · TAP THE SKY FOR ROCKS');
-        if (mounted) setState(() {});
-        return;
-      }
-      _finishRoundLocally();
-      return;
-    }
     if (!classicMode || reviveOffered) {
       await finishRun();
       return;
@@ -747,7 +852,7 @@ class _PlayScreenState extends State<PlayScreen>
   /// "Play again" while in a room stays in the same room: the host starts
   /// a fresh round, everyone else votes and auto-starts on the rematch.
   Future<void> playAgainInRoom() async {
-    if (!race.active || adsBusy) return;
+    if (!race.active || !race.finished || adsBusy) return;
     final isHost = race.room['host'] == race.uidOrNull;
     try {
       if (isHost) {
@@ -767,40 +872,6 @@ class _PlayScreenState extends State<PlayScreen>
 
   /// Local standings when the round is decided but no server result exists.
   /// Champion (last standing) or top-step winner, ties draw.
-  void _finishRoundLocally() {
-    final selfId = race.uidOrNull;
-    var topStep = game.highest, topName = settings.name, topId = selfId;
-    var topCount = 1;
-    for (final p in race.peers) {
-      final step = ((p['step'] as num?) ?? 0).toInt();
-      if (step > topStep) {
-        topStep = step;
-        topName = p['name'].toString();
-        topId = p['id'].toString();
-        topCount = 1;
-      } else if (step == topStep && p['id'].toString() != topId) {
-        topCount++;
-      }
-    }
-    if (topCount > 1) {
-      resultOutcome = 0;
-      result = 'Draw!';
-    } else if (topId == selfId) {
-      resultOutcome = 1;
-      result = topStep == game.highest && game.mode == PlayMode.playing
-          ? 'Last one standing!'
-          : 'You win!';
-    } else {
-      resultOutcome = -1;
-      result = '$topName wins!';
-    }
-    progress.best = math.max(progress.best, game.highest);
-    game.stopInput();
-    game.mode = PlayMode.over;
-    unawaited(race.send(game));
-    unawaited(finishRun());
-  }
-
   /// Applies a host rematch broadcast: fresh course, countdown, ready mark.
   void _applyRematch() {
     cancelRevive();
@@ -812,7 +883,8 @@ class _PlayScreenState extends State<PlayScreen>
     _allDecidedAtMs = 0;
     race.finishSent = false;
     peerPositions.clear();
-    game.start(courseSeed: race.effectiveSeed);
+    game.reset(courseSeed: race.effectiveSeed);
+    game.mode = PlayMode.menu;
     raceStarted = false;
     game.say('REMATCH! GET READY');
     unawaited(race.publishStatus('ready'));
@@ -881,23 +953,21 @@ class _PlayScreenState extends State<PlayScreen>
     final id = searchId;
     searchId = null;
     if (id != null && widget.store.cloud) {
-      unawaited(
-        () async {
-          try {
-            final poll = await social.matchPoll();
-            await social.matchCancel();
-            // A committed match is left explicitly, so the other racer sees a disconnect.
-            if (poll['status'] == 'matched') {
-              final abandoned = RaceService(widget.store);
-              await abandoned.attachMatch(poll['code'] as String);
-              await abandoned.leave();
-              abandoned.dispose();
-            }
-          } catch (e) {
-            debugPrint('Search cleanup: $e');
+      unawaited(() async {
+        try {
+          final poll = await social.matchPoll();
+          await social.matchCancel();
+          // A committed match is left explicitly, so the other racer sees a disconnect.
+          if (poll['status'] == 'matched') {
+            final abandoned = RaceService(widget.store);
+            await abandoned.attachMatch(poll['code'] as String);
+            await abandoned.leave();
+            abandoned.dispose();
           }
-        }(),
-      );
+        } catch (e) {
+          debugPrint('Search cleanup: $e');
+        }
+      }());
     }
   }
 
@@ -1169,7 +1239,13 @@ class _PlayScreenState extends State<PlayScreen>
   }
 
   Future<void> voiceAction() async {
-    if (!race.active || rival != null || voice.busy) return;
+    if (!race.active || rival != null) return;
+    if (voice.busy) {
+      // A join is still handshaking: queue the unmute instead of dropping
+      // the tap, so the mic goes live the instant it connects.
+      voice.queueUnmute();
+      return;
+    }
     final roomCode = race.code;
     if (roomCode == null) return;
     try {
@@ -1228,45 +1304,9 @@ class _PlayScreenState extends State<PlayScreen>
     if (race.effectiveStartAt == 0 || now < race.effectiveStartAt + 3000) {
       return;
     }
-    final rematchAt =
-        ((race.room['rematch'] as Map?)?['startAt'] as num?)?.toInt() ?? 0;
-    if (rematchAt > 0 && now - rematchAt < 8000) return;
-    final players = race.peers;
-    if (players.length < 2) return;
-    String? winner, reason;
-    final finishers = players
-        .where(
-          (p) =>
-              !race.arcade &&
-              ((p['step'] as num?) ?? 0) >= race.target &&
-              p['finishedAt'] != null,
-        )
-        .toList()
-      ..sort(
-        (a, b) => ((a['finishedAt'] as num?) ?? 0).compareTo(
-          (b['finishedAt'] as num?) ?? 0,
-        ),
-      );
-    final alive = players
-        .where((p) => p['status'] == 'live' || p['status'] == 'finished')
-        .toList();
-    if (finishers.isNotEmpty) {
-      final tied =
-          finishers.length > 1 &&
-          finishers[0]['finishedAt'] == finishers[1]['finishedAt'];
-      winner = tied ? '' : finishers[0]['id'].toString();
-      reason = tied ? 'draw' : 'finish';
-    } else if (race.arcade && alive.length <= 1) {
-      winner = alive.isNotEmpty ? alive.first['id'].toString() : '';
-      reason = alive.isNotEmpty ? 'survival' : 'draw';
-    } else if (alive.isEmpty) {
-      winner = '';
-      reason = 'all-out';
-    } else {
-      return;
-    }
-    unawaited(race.settleResult(winner, reason));
+    unawaited(race.settleResult());
   }
+
   int _seenRematchRound = 0, _allDecidedAtMs = 0;
   bool _rematchWaiting = false;
   bool get _spectating => game.mode == PlayMode.spectate;
@@ -1317,6 +1357,21 @@ class _PlayScreenState extends State<PlayScreen>
     _spendAndThrow(_spectateLeaderX());
   }
 
+  /// Bottom-bar rocks button: throws while spectating, otherwise reports
+  /// ammo (rocks are pre-game purchases, never mid-round).
+  void throwRockFromBar() {
+    if (_spectating && race.active) {
+      throwRockAtLeader();
+      return;
+    }
+    final ammo = progress.items['rock'] ?? 0;
+    toast(
+      ammo > 0
+          ? '$ammo rocks ready — spectate a live round to throw'
+          : 'Buy rocks pre-game (500 coins each)',
+    );
+  }
+
   double _spectateLeaderX() {
     final live = race.livePeers;
     Map<String, dynamic>? top;
@@ -1329,42 +1384,42 @@ class _PlayScreenState extends State<PlayScreen>
     return ((top?['x'] as num?)?.toDouble() ?? 210).clamp(20.0, 400.0);
   }
 
-  /// Rock economy: 1 rock ammo first (600 in the shop), else 2000 coins.
-  /// Returns false (with a toast) when neither covers the throw.
-  bool _spendAndThrow(double worldX) {
+  /// Rock economy: every throw (tap or button shower) spends exactly one
+  /// rock ammo, bought in the shop for 500 coins — before or mid-round.
+  /// No coins fallback: throws must be purchased first.
+  bool _throwBusy = false;
+  Future<void> _spendAndThrow(double worldX) async {
     final now = race.serverNow;
-    if (now - _lastThrowMs < 800) return false;
+    if (_throwBusy ||
+        !_spectating ||
+        !race.active ||
+        race.finished ||
+        now - _lastThrowMs < 800)
+      return;
     final ammo = progress.items['rock'] ?? 0;
-    if (ammo > 0) {
-      progress.items['rock'] = ammo - 1;
-    } else if (progress.coins >= 2000) {
-      progress.coins -= 2000;
-    } else {
-      toast('Need a rock from the shop or 2000 coins');
-      return false;
+    if (ammo <= 0) {
+      toast('Out of rocks — buy them in the shop before the next round');
+      return;
     }
-    _lastThrowMs = now;
-    unawaited(widget.store.save(progress));
-    final id = '${race.uidOrNull ?? 'guest'}_$now';
-    game.spawnRock(
-      id: id,
-      owner: race.uidOrNull ?? 'guest',
-      x: worldX,
-      y: game.camera - 40,
-      vx: 0,
-      vy: 640,
+    _throwBusy = true;
+    progress.items['rock'] = ammo - 1;
+    dirty = true;
+    final key = await race.sendRock(
+      x0: worldX < 210 ? -20 : 440,
+      y0: game.camera - 40,
+      vx: worldX < 210 ? 170 : -170,
+      vy: 420,
+      t0: now,
     );
-    unawaited(
-      race
-          .sendRock(x0: worldX, y0: game.camera - 40, vx: 0, vy: 640, t0: now)
-          .then((key) {
-            if (key == null) {
-              debugPrint('Rock publish failed: ${race.error}');
-            }
-          }),
-    );
+    if (key == null) {
+      progress.items['rock'] = ammo;
+      toast('Throw failed. Rock refunded.');
+    } else {
+      _lastThrowMs = now;
+    }
+    await widget.store.save(progress);
+    _throwBusy = false;
     if (mounted) setState(() {});
-    return true;
   }
 
   void pause() {
@@ -1501,6 +1556,7 @@ class _PlayScreenState extends State<PlayScreen>
   }
 
   Future<void> showShop() async {
+    // Shop is pre-game only: nothing can be bought mid-round.
     if (race.active) {
       toast('Leave the race before opening the shop.');
       return;
@@ -1849,8 +1905,8 @@ class _PlayScreenState extends State<PlayScreen>
     final peers = race.active
         ? race.peers.where((p) => p['id'] != selfId).map((p) {
             final target = Offset(
-              (p['x'] as num).toDouble(),
-              (p['y'] as num).toDouble(),
+              (p['x'] as num?)?.toDouble() ?? 210.0,
+              (p['y'] as num?)?.toDouble() ?? 623.0,
             );
             final position = Offset.lerp(
               peerPositions[p['id']] ?? target,
@@ -1904,7 +1960,7 @@ class _PlayScreenState extends State<PlayScreen>
                     behavior: HitTestBehavior.opaque,
                     onTapDown: (d) {
                       if (game.mode == PlayMode.spectate) {
-                        throwRockAt(d.localPosition, box.maxWidth);
+                        // Use the explicit paid Throw Rock button only.
                       }
                     },
                     onPanStart: (d) {
@@ -2133,13 +2189,13 @@ class _PlayScreenState extends State<PlayScreen>
                     decline: declineRevive,
                     spectateLeader: _spectateLeader,
                     spectateHost:
-                        race.active &&
-                        race.room['host'] == race.uidOrNull,
+                        race.active && race.room['host'] == race.uidOrNull,
                     spectateVotes: race.active ? race.rematchVotes : 0,
                     rockAmmo: progress.items['rock'] ?? 0,
-                    throwRock: throwRockAtLeader,
+                    inRace: race.active,
+                    throwRock: throwRockFromBar,
                     rematchWaiting: _rematchWaiting,
-                    rematch: playAgainInRoom,
+                    rematch: race.finished ? playAgainInRoom : null,
                     voiceLabel: voice.connected
                         ? (voice.muted ? 'Unmute' : 'Mute')
                         : 'Join voice',
@@ -2177,13 +2233,12 @@ class _PlayScreenState extends State<PlayScreen>
     );
   }
 
-  /// Pre-connects voice muted so the mic tap unmutes with ~0 latency.
+  /// Pre-connects voice muted to reduce delay; audio/network latency still applies.
   /// Silent: failures surface when the user taps the mic instead.
   void preconnectVoice() {
     final code = race.code;
     if (code == null ||
         !race.active ||
-        _voicePreconnectedFor == code ||
         voice.connected ||
         voice.busy ||
         DateTime.now().millisecondsSinceEpoch < _voiceRetryAtMs) {
@@ -2200,8 +2255,7 @@ class _PlayScreenState extends State<PlayScreen>
           .catchError((Object e) {
             debugPrint('Voice pre-connect: $e');
             _voicePreconnectedFor = null;
-            _voiceRetryAtMs =
-                DateTime.now().millisecondsSinceEpoch + 30000;
+            _voiceRetryAtMs = DateTime.now().millisecondsSinceEpoch + 30000;
           }),
     );
   }
@@ -2210,6 +2264,7 @@ class _PlayScreenState extends State<PlayScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     unawaited(authSub?.cancel());
+    unawaited(push.dispose());
     unawaited(_pushLinksSub?.cancel());
     unawaited(_pushMsgsSub?.cancel());
     unawaited(_invitesSub?.cancel());

@@ -141,9 +141,7 @@ class _FriendsSheetState extends State<FriendsSheet> {
                     ? null
                     : () => action(() async {
                         await widget.join(p['code'] as String);
-                        await widget.social.dismissInvite(
-                          p['from'].toString(),
-                        );
+                        await widget.social.dismissInvite(p['from'].toString());
                         if (context.mounted) Navigator.pop(context);
                       }),
               ),
@@ -204,12 +202,12 @@ class _FriendsSheetState extends State<FriendsSheet> {
                   onPressed: UiSounds.wrap(
                     busy
                         ? null
-                      : () => action(() async {
-                          await widget.social.removeFriend(
-                            p['id'].toString(),
-                          );
-                          friends = await widget.social.fetchFriends();
-                        }),
+                        : () => action(() async {
+                            await widget.social.removeFriend(
+                              p['id'].toString(),
+                            );
+                            friends = await widget.social.fetchFriends();
+                          }),
                   ),
                 ),
               ],

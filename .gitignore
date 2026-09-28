@@ -16,3 +16,10 @@ functions/node_modules/
 functions/.env*
 functions/.secret.local
 .firebase/
+
+# FCM relay service-account key (server only — never commit).
+tools/service-account.json
+tools/node_modules/
+# Service-account private keys must NEVER be committed, anywhere.
+*firebase-adminsdk*.json
+*-firebase-adminsdk-*.json

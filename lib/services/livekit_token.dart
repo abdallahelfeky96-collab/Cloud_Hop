@@ -5,10 +5,13 @@ import '../config.dart';
 /// Mints LiveKit JWT access tokens directly on the device using the
 /// self-hosted server credentials from [AppConfig].
 ///
+/// This is the ONLY token path the app uses: no backend call happens here,
+/// so there is no "service not configured" failure mode beyond the bundled
+/// credentials themselves. (The `trusted-service/` server exists as an
+/// optional future path; nothing in the app depends on it.)
+///
 /// WARNING: the API secret ships inside the app binary. Anyone who extracts
-/// it gains full control of the LiveKit server. Dev/test servers only —
-/// production should mint tokens server-side (see the `voiceToken` Cloud
-/// Function in functions/).
+/// it gains full control of the LiveKit server. Dev/test servers only.
 class LiveKitToken {
   LiveKitToken._();
 
@@ -44,5 +47,16 @@ class LiveKitToken {
       SecretKey(AppConfig.effectiveLivekitSecret),
       expiresIn: ttl,
     );
+  }
+
+  /// Backwards-compatible request shape: mints locally and returns the
+  /// `{token, url}` map the voice service consumes.
+  static Future<Map<String, dynamic>> request(
+    String room, {
+    String? identity,
+    String? name,
+  }) async {
+    final token = generate(room: room, identity: identity ?? 'guest', name: name);
+    return {'token': token, 'url': AppConfig.effectiveLivekitUrl};
   }
 }

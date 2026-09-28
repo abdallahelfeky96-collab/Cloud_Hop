@@ -2,18 +2,19 @@ import 'package:flutter/foundation.dart';
 import 'package:livekit_client/livekit_client.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-import '../config.dart';
 import 'livekit_token.dart';
 
 /// Ephemeral LiveKit voice chat for a match room. Nothing is stored:
-/// the token is minted on-device at join time and everything is released
+/// the token is obtained from the trusted service at join time and everything is released
 /// on [leave] (disconnect + listener cancel + room dispose).
 class VoiceService extends ChangeNotifier {
   VoiceService();
   Room? _room;
+  String? _roomCode;
   CancelListenFunc? _cancelMicEvents;
   String lastError = '';
   bool muted = true, speaker = true, busy = false;
+  bool _unmuteOnConnect = false;
   int _generation = 0;
   bool get connected => _room?.connectionState == ConnectionState.connected;
 
@@ -39,16 +40,17 @@ class VoiceService extends ChangeNotifier {
   }
 
   /// Joins [code] as an audio-only participant: requests the microphone
-  /// first, mints a 2-hour token locally, connects, then publishes the
+  /// first, fetches a short-lived token, connects, then publishes the
   /// microphone unless [startMuted]. Remote tracks auto-subscribe and play.
-  /// Pre-connect muted on room join so the mic tap unmutes with ~0 latency.
+  /// Pre-connect muted on room join to avoid reconnecting on each mic toggle.
   Future<void> join(
     String code, {
     String? displayName,
     String? identity,
     bool startMuted = true,
   }) async {
-    if (busy || connected) return;
+    if (busy || (connected && _roomCode == code)) return;
+    if (_room != null) await leave();
     final generation = ++_generation;
     busy = true;
     notifyListeners();
@@ -60,28 +62,40 @@ class VoiceService extends ChangeNotifier {
         );
       }
       if (generation != _generation) return;
-      final id = (identity ?? '').trim().isEmpty ? 'guest' : identity!.trim();
-      final token = LiveKitToken.generate(
-        room: code,
-        identity: id,
+      // On-device mint against the self-hosted server (ws://): no backend
+      // round-trip, so this step cannot fail with "service not configured".
+      final credentials = await LiveKitToken.request(
+        code,
+        identity: identity,
         name: displayName,
       );
-      final url = AppConfig.effectiveLivekitUrl;
-      if (!url.startsWith('ws://') && !url.startsWith('wss://')) {
-        throw StateError('LiveKit server URL is invalid.');
-      }
+      if (generation != _generation) return;
+      final token = credentials['token'], url = credentials['url'];
+      if (token is! String ||
+          url is! String ||
+          (!url.startsWith('ws://') && !url.startsWith('wss://')))
+        throw StateError('Invalid voice configuration.');
       pending = Room();
-      await pending.connect(url, token);
+      // Bounded handshake: a stalled network must never wedge `busy` on.
+      await pending
+          .connect(url, token)
+          .timeout(const Duration(seconds: 15));
       if (generation != _generation) {
         await pending.disconnect();
         await pending.dispose();
         return;
       }
       _room = pending;
+      _roomCode = code;
       _room!.addListener(notifyListeners);
       _watchMicEvents(_room!);
       await AudioManager.instance.setSpeakerOutputPreferred(speaker);
-      await _room!.localParticipant?.setMicrophoneEnabled(!startMuted);
+      // A tap that landed mid-handshake converts into an instant unmute.
+      final wantMic = !startMuted || _unmuteOnConnect;
+      _unmuteOnConnect = false;
+      await _room!.localParticipant
+          ?.setMicrophoneEnabled(wantMic)
+          .timeout(const Duration(seconds: 10));
       if (generation != _generation) return;
       // Read back the published track: only show ON when it is really live.
       _syncMicState();
@@ -92,6 +106,11 @@ class VoiceService extends ChangeNotifier {
         lastError = '';
       }
     } catch (e) {
+      _room?.removeListener(notifyListeners);
+      _cancelMicEvents?.call();
+      _cancelMicEvents = null;
+      _room = null;
+      _roomCode = null;
       lastError = e.toString();
       debugPrint('Voice join failed: $e');
       await pending?.disconnect();
@@ -101,6 +120,14 @@ class VoiceService extends ChangeNotifier {
       busy = false;
       if (generation == _generation) notifyListeners();
     }
+  }
+
+  /// Records a mic tap that arrived while a join is still in flight, so the
+  /// microphone goes live the instant the connection completes instead of
+  /// dropping the tap silently.
+  void queueUnmute() {
+    _unmuteOnConnect = true;
+    notifyListeners();
   }
 
   Future<void> toggle() async {
@@ -133,7 +160,9 @@ class VoiceService extends ChangeNotifier {
     _generation++;
     final old = _room;
     _room = null;
+    _roomCode = null;
     muted = true;
+    _unmuteOnConnect = false;
     lastError = '';
     _cancelMicEvents?.call();
     _cancelMicEvents = null;

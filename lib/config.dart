@@ -19,11 +19,12 @@ class AppConfig {
   static const interstitialId = String.fromEnvironment('ADMOB_INTERSTITIAL_ID');
   static const rewardedId = String.fromEnvironment('ADMOB_REWARDED_ID');
 
-  /// Optional sender credential for direct device-to-device pushes.
-  /// Supplied ONLY via `--dart-define=FCM_SENDER_KEY=...`; never checked
-  /// into source. Empty (default) disables sending; receiving, foreground
-  /// overlays and tap routing keep working regardless.
-  static const fcmSenderKey = String.fromEnvironment('FCM_SENDER_KEY');
+  /// HTTPS service hosted on Cloud Run or an existing server; no Cloud Functions.
+  /// NOTE: voice tokens are minted on-device (see LiveKitToken), so this
+  /// endpoint is NOT on the voice path and may remain empty.
+  static const trustedServiceUrl = String.fromEnvironment(
+    'TRUSTED_SERVICE_URL',
+  );
 
   // Self-hosted LiveKit voice server. Overrides via --dart-define.
   static const livekitUrl = String.fromEnvironment('LIVEKIT_URL');
@@ -31,11 +32,10 @@ class AppConfig {
   static const livekitSecret = String.fromEnvironment('LIVEKIT_API_SECRET');
 
   /// WARNING: the fallback secret below ships inside the APK and can be
-  /// extracted by anyone who downloads it. Anyone holding it gets full
-  /// control of the LiveKit server (join/publish in any room). This is
-  /// acceptable for a dev/test server only. For production, REMOVE the
-  /// fallback secret and mint tokens server-side (the `voiceToken` Cloud
-  /// Function in functions/ already supports this).
+  /// extracted from it — anyone holding it fully controls the LiveKit
+  /// server. Acceptable for this private dev server only. For production,
+  /// REMOVE the fallback secret and mint tokens on a server you operate
+  /// (see trusted-service/server.mjs).
   static const _fallbackLivekitUrl = 'ws://84.8.113.65:7880';
   static const _fallbackLivekitKey = 'devkey';
   static const _fallbackLivekitSecret =

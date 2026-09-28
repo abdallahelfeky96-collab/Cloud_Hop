@@ -1,5 +1,5 @@
 // ignore_for_file: avoid_print
-import 'package:cloud_hop/game/engine.dart';
+import '../lib/game/engine.dart';
 
 void check(bool condition, String message) {
   if (!condition) throw StateError(message);

@@ -7,6 +7,7 @@ import 'package:firebase_database/firebase_database.dart';
 import 'progress_store.dart';
 import 'firebase_errors.dart';
 import '../game/engine.dart';
+import '../game/match_result.dart';
 
 class RaceService extends ChangeNotifier {
   final ProgressStore store;
@@ -30,7 +31,8 @@ class RaceService extends ChangeNotifier {
   int get rematchRound =>
       ((room['rematch'] as Map?)?['round'] as num?)?.toInt() ?? 0;
   int get rematchVotes => (room['rematchVotes'] as Map?)?.length ?? 0;
-  bool get started => effectiveStartAt > 0 && serverNow >= effectiveStartAt + 3000;
+  bool get started =>
+      effectiveStartAt > 0 && serverNow >= effectiveStartAt + 3000;
   List<Map<String, dynamic>> get livePeers =>
       peers.where((p) => p['status'] == 'live').toList();
   List<Map<String, dynamic>> get throwEvents {
@@ -43,8 +45,10 @@ class RaceService extends ChangeNotifier {
             'id': e.key.toString(),
           },
         )
+        .where((e) => matchInt(e['round']) == rematchRound)
         .toList();
   }
+
   bool get arcade => room['mode'] == 'arcade';
   int get target => (room['target'] as num?)?.toInt() ?? 100;
   String get winner => (room['result'] as Map?)?['winner'] as String? ?? '';
@@ -118,6 +122,7 @@ class RaceService extends ChangeNotifier {
                   'character': character,
                   'lives': 2,
                   'status': 'ready',
+                  'round': 0,
                   'updatedAt': ServerValue.timestamp,
                 },
               },
@@ -235,14 +240,40 @@ class RaceService extends ChangeNotifier {
   /// First-writer-wins round settlement, run by every client. Replaces the
   /// server `settleRound` trigger: whoever writes first decides, the rest
   /// abort silently on the existing result.
-  Future<void> settleResult(String winner, String reason) async {
+  Future<void> settleResult() async {
     if (!active) return;
     try {
+      final snapshot = await ref.get();
+      if (snapshot.value is! Map) return;
+      final fresh = Map<String, dynamic>.from(snapshot.value as Map);
+      final round = matchInt((fresh['rematch'] as Map?)?['round']);
+      final start = matchInt(
+        (fresh['rematch'] as Map?)?['startAt'] ?? fresh['startAt'],
+      );
+      if (serverNow < start + 3000 || start == 0) return;
+      final raw = fresh['players'] as Map? ?? {};
+      final players = raw.entries
+          .where((e) => e.value is Map)
+          .map(
+            (e) => {
+              ...Map<String, dynamic>.from(e.value as Map),
+              'id': e.key.toString(),
+            },
+          )
+          .toList();
+      if (players.any((p) => matchInt(p['round']) != round)) return;
+      final decision = evaluateMatch(
+        players,
+        target: matchInt(fresh['target']),
+        arcade: fresh['mode'] == 'arcade',
+      );
+      if (decision == null || round != rematchRound || !active) return;
       await ref.child('result').runTransaction((current) {
         if (current != null) return Transaction.abort();
         return Transaction.success({
-          'winner': winner,
-          'reason': reason,
+          'winner': decision.winner,
+          'reason': decision.reason,
+          'round': round,
           'settledAt': ServerValue.timestamp,
         });
       });
@@ -252,10 +283,12 @@ class RaceService extends ChangeNotifier {
   }
 
   Future<void> attachMatch(String roomCode) async {
+    if (code == roomCode && _subscription != null) return;
     final uid = uidOrNull;
     if (uid == null) throw StateError('Sign in first.');
     await leave();
     code = roomCode;
+    error = null;
     try {
       final data = await ref.get();
       room = Map<String, dynamic>.from(data.value as Map);
@@ -273,6 +306,12 @@ class RaceService extends ChangeNotifier {
   Future<void> watchRoom() async {
     final uid = uidOrNull;
     if (uid == null) throw StateError('Sign in first.');
+    final snapshot = await ref.get();
+    if (snapshot.value is! Map) throw StateError('Room no longer exists.');
+    room = Map<String, dynamic>.from(snapshot.value as Map);
+    error = null;
+    await _subscription?.cancel();
+    await _clock?.cancel();
     finishSent = false;
     await ref.child('players/$uid').onDisconnect().update({
       'status': 'out',
@@ -284,8 +323,10 @@ class RaceService extends ChangeNotifier {
         .listen((event) {
           clockOffset = (event.snapshot.value as num?)?.toInt() ?? 0;
         });
+    final watchingCode = code;
     _subscription = ref.onValue.listen(
       (event) {
+        if (code != watchingCode) return;
         if (!event.snapshot.exists) {
           error = 'The host closed this room.';
           room = {};
@@ -293,6 +334,7 @@ class RaceService extends ChangeNotifier {
           return;
         }
         room = Map<String, dynamic>.from(event.snapshot.value as Map);
+        error = null;
         notifyListeners();
       },
       onError: (Object e) {
@@ -305,7 +347,13 @@ class RaceService extends ChangeNotifier {
   Future<void> start() async {
     if (room['host'] != uidOrNull) throw StateError('Only the host can start.');
     if (peers.length < 2) throw StateError('Invite another player first.');
-    await ref.child('startAt').set(ServerValue.timestamp);
+    await ref
+        .child('startAt')
+        .runTransaction(
+          (value) => value == null
+              ? Transaction.success(ServerValue.timestamp)
+              : Transaction.abort(),
+        );
   }
 
   Future<void> send(GameEngine game) async {
@@ -314,6 +362,9 @@ class RaceService extends ChangeNotifier {
     sending = true;
     try {
       await ref.child('players/$uid').update({
+        'round': rematchRound,
+        'score': game.points,
+        'movement': game.movementDistance.round(),
         'x': game.player.x,
         'y': game.player.y,
         'step': game.highest,
@@ -352,11 +403,18 @@ class RaceService extends ChangeNotifier {
     required int t0,
   }) async {
     final uid = uidOrNull;
-    if (!active || uid == null) return null;
+    if (!active ||
+        uid == null ||
+        finished ||
+        !peers.any((p) => p['id'] == uid && p['status'] == 'spectator'))
+      return null;
     try {
       final node = ref.child('throws').push();
       await node.set({
         'by': uid,
+        'round': rematchRound,
+        'count': 5 + Random().nextInt(6),
+        'seed': Random().nextInt(0x7fffffff),
         'x0': x0,
         'y0': y0,
         'vx': vx,
@@ -413,6 +471,7 @@ class RaceService extends ChangeNotifier {
         },
         'result': null,
         'rematchVotes': null,
+        'throws': null,
       });
       _myThrows.clear();
     } catch (e) {
@@ -426,6 +485,12 @@ class RaceService extends ChangeNotifier {
     if (!active || uid == null) return;
     try {
       await ref.child('players/$uid').update({
+        'round': rematchRound,
+        'step': 0,
+        'score': 0,
+        'movement': 0,
+        'lives': 2,
+        'finishedAt': null,
         'status': status,
         'updatedAt': ServerValue.timestamp,
       });
@@ -440,6 +505,7 @@ class RaceService extends ChangeNotifier {
     final uid = uidOrNull;
     code = null;
     room = {};
+    error = null;
     await _subscription?.cancel();
     await _clock?.cancel();
     _subscription = null;
