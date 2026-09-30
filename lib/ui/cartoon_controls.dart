@@ -33,6 +33,7 @@ enum CartoonArt {
   classic,
   challenge,
   joystick,
+  rock,
 }
 
 CartoonArt? artForIcon(IconData icon) {
@@ -74,6 +75,7 @@ CartoonArt? artForIcon(IconData icon) {
     return CartoonArt.trampoline;
   if ([Icons.favorite, Icons.favorite_rounded].contains(icon))
     return CartoonArt.life;
+  if (icon == Icons.circle) return CartoonArt.rock;
   if ([Icons.card_giftcard, Icons.card_giftcard_rounded].contains(icon))
     return CartoonArt.gift;
   if ([Icons.monetization_on, Icons.toll].contains(icon))
@@ -148,6 +150,54 @@ class CartoonSpritePainter extends CustomPainter {
   CartoonSpritePainter(this.image, this.art);
   @override
   void paint(Canvas canvas, Size size) {
+    if (art == CartoonArt.rock) {
+      final bounds = Offset.zero & size;
+      final outline = Paint()
+        ..color = const Color(0xff493c35)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = size.width * .055
+        ..strokeJoin = StrokeJoin.round;
+      final stone = Path()
+        ..moveTo(size.width * .18, size.height * .72)
+        ..lineTo(size.width * .12, size.height * .48)
+        ..lineTo(size.width * .34, size.height * .17)
+        ..lineTo(size.width * .62, size.height * .13)
+        ..lineTo(size.width * .87, size.height * .41)
+        ..lineTo(size.width * .82, size.height * .69)
+        ..lineTo(size.width * .62, size.height * .84)
+        ..lineTo(size.width * .35, size.height * .83)
+        ..close();
+      canvas.drawShadow(stone, const Color(0x55392e28), 3, true);
+      canvas.drawPath(
+        stone,
+        Paint()
+          ..shader = const LinearGradient(
+            begin: Alignment.topLeft,
+            end: Alignment.bottomRight,
+            colors: [Color(0xffaa9a88), Color(0xff78695f), Color(0xff554a43)],
+          ).createShader(bounds),
+      );
+      canvas.drawPath(stone, outline);
+      canvas.drawOval(
+        Rect.fromLTWH(
+          size.width * .30,
+          size.height * .29,
+          size.width * .18,
+          size.height * .10,
+        ),
+        Paint()..color = const Color(0xffc8b8a3).withValues(alpha: .8),
+      );
+      canvas.drawOval(
+        Rect.fromLTWH(
+          size.width * .58,
+          size.height * .53,
+          size.width * .12,
+          size.height * .08,
+        ),
+        Paint()..color = const Color(0xffc8b8a3).withValues(alpha: .55),
+      );
+      return;
+    }
     // Atlas-specific transparent gutters. Do not assume equally spaced rows:
     // the approved generated sprites have slightly different silhouettes.
     const columns = [0.0, 253.0, 503.0, 745.0, 988.0, 1254.0];

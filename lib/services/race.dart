@@ -31,6 +31,11 @@ class RaceService extends ChangeNotifier {
   int get rematchRound =>
       ((room['rematch'] as Map?)?['round'] as num?)?.toInt() ?? 0;
   int get rematchVotes => (room['rematchVotes'] as Map?)?.length ?? 0;
+  /// True once *this* player asked the host for a same-room rematch. Read
+  /// from the room so the tick on the avatar survives navigation away from
+  /// the result screen and clears only when the host starts the round.
+  bool get myRematchRequested =>
+      active && (room['rematchVotes'] as Map?)?[uid] == true;
   bool get started =>
       effectiveStartAt > 0 && serverNow >= effectiveStartAt + 3000;
   List<Map<String, dynamic>> get livePeers =>

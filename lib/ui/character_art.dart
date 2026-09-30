@@ -20,14 +20,16 @@ class CharacterArt {
 
   // Generated bodies have unequal cell margins; avoid clipping the curls.
   static Rect bodyRegion(ui.Image image, String character) => Rect.fromLTRB(
-    character == 'female' ? 0 : image.width * (950 / 1774),
+    character.startsWith('female') ? 0 : image.width * (950 / 1774),
     0,
-    character == 'female' ? image.width * (950 / 1774) : image.width.toDouble(),
+    character.startsWith('female')
+        ? image.width * (950 / 1774)
+        : image.width.toDouble(),
     image.height.toDouble(),
   );
 
   static Rect region(ui.Image image, String character) => Rect.fromLTWH(
-    character == 'female' ? 0 : image.width / 2,
+    character.startsWith('female') ? 0 : image.width / 2,
     0,
     image.width / 2,
     image.height.toDouble(),

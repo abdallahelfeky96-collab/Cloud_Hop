@@ -303,7 +303,7 @@
             },
 
             "character": {
-              ".validate": "newData.val() === 'male' || newData.val() === 'female'"
+              ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 32"
             },
 
             "lives": {

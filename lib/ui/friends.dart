@@ -1,3 +1,4 @@
+import 'lang.dart';
 import 'ui_sounds.dart';
 import 'cartoon_controls.dart';
 
@@ -88,9 +89,9 @@ class _FriendsSheetState extends State<FriendsSheet> {
         if (widget.social.store.cloud)
           ListTile(
             contentPadding: EdgeInsets.zero,
-            title: const Text('My player ID'),
+            title: Text(tr('My player ID')),
             subtitle: SelectableText(
-              widget.social.store.uidOrNull ?? 'Signing in…',
+              widget.social.store.uidOrNull ?? tr('Signing in…'),
             ),
             trailing: IconButton(
               icon: const CartoonIcon(Icons.copy),
@@ -103,9 +104,9 @@ class _FriendsSheetState extends State<FriendsSheet> {
           ),
         TextField(
           controller: id,
-          decoration: const InputDecoration(
-            labelText: 'Friend’s player ID',
-            border: OutlineInputBorder(),
+          decoration: InputDecoration(
+            labelText: tr('Friend’s player ID'),
+            border: const OutlineInputBorder(),
           ),
         ),
         FilledButton.icon(
@@ -116,25 +117,25 @@ class _FriendsSheetState extends State<FriendsSheet> {
                     final outcome = await widget.social.addFriend(id.text);
                     friends = await widget.social.fetchFriends();
                     message = outcome == 'accepted'
-                        ? 'Friend added'
-                        : 'Friend request sent';
+                        ? tr('Friend added')
+                        : tr('Friend request sent');
                     id.clear();
                   }),
           ),
           icon: const CartoonIcon(Icons.person_add),
-          label: const Text('Add friend'),
+          label: Text(tr('Add friend')),
         ),
         if (busy) const LinearProgressIndicator(),
         if (message.isNotEmpty) Text(message),
         if (invites.isNotEmpty)
-          const Text(
-            'Room invitations',
-            style: TextStyle(fontWeight: FontWeight.bold),
+          Text(
+            tr('Room invitations'),
+            style: const TextStyle(fontWeight: FontWeight.bold),
           ),
         ...invites.map(
           (p) => ListTile(
-            title: Text('${p['name']} invited you'),
-            subtitle: Text('Room ${p['code']}'),
+            title: Text(trn('{n} invited you', p['name'])),
+            subtitle: Text(trn('Room {n}', p['code'])),
             trailing: TextButton(
               onPressed: UiSounds.wrap(
                 busy
@@ -145,24 +146,28 @@ class _FriendsSheetState extends State<FriendsSheet> {
                         if (context.mounted) Navigator.pop(context);
                       }),
               ),
-              child: const Text('Join'),
+              child: Text(tr('Join')),
             ),
           ),
         ),
         const SizedBox(height: 16),
         if (friends.isEmpty && !busy)
-          const Text(
-            'Add a friend by ID. Accept their request to exchange room invitations.',
+          Text(
+            tr(
+              'Add a friend by ID. Accept their request to exchange room invitations.',
+            ),
           ),
         ...friends.map(
           (p) => ListTile(
             title: Text(p['name'] as String),
             subtitle: Text(
-              p['status'] == 'accepted'
-                  ? 'Friend'
-                  : p['incoming'] == true
-                  ? 'Wants to be your friend'
-                  : 'Request sent',
+              tr(
+                p['status'] == 'accepted'
+                    ? 'Friend'
+                    : p['incoming'] == true
+                    ? 'Wants to be your friend'
+                    : 'Request sent',
+              ),
             ),
             trailing: Row(
               mainAxisSize: MainAxisSize.min,
@@ -179,7 +184,7 @@ class _FriendsSheetState extends State<FriendsSheet> {
                               friends = await widget.social.fetchFriends();
                             }),
                     ),
-                    child: const Text('Accept'),
+                    child: Text(tr('Accept')),
                   ),
                 if (p['status'] == 'accepted' && widget.roomCode != null)
                   TextButton(
@@ -191,10 +196,10 @@ class _FriendsSheetState extends State<FriendsSheet> {
                                 p['id'].toString(),
                                 widget.roomCode!,
                               );
-                              message = 'Invitation sent';
-                            }),
+                            message = tr('Invitation sent');
+                          }),
                     ),
-                    child: const Text('Invite'),
+                    child: Text(tr('Invite')),
                   ),
                 IconButton(
                   tooltip: 'Remove or decline',
@@ -217,7 +222,7 @@ class _FriendsSheetState extends State<FriendsSheet> {
         const SizedBox(height: 16),
         OutlinedButton(
           onPressed: UiSounds.wrap(() => Navigator.pop(context)),
-          child: const Text('Done'),
+          child: Text(tr('Done')),
         ),
       ],
     ),

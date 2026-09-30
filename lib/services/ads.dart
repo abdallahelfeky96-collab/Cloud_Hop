@@ -22,21 +22,30 @@ class AdService {
       : AppConfig.rewardedId;
   Future<void> initialize() async {
     if (!mobile || defaultTargetPlatform != TargetPlatform.android) return;
-    final consent = Completer<void>();
-    ConsentInformation.instance.requestConsentInfoUpdate(
-      ConsentRequestParameters(),
-      () {
-        ConsentForm.loadAndShowConsentFormIfRequired((error) {
+    // Ads are optional: if the consent platform channel is missing or throws,
+    // keep the game playable instead of surfacing an unhandled async error.
+    try {
+      final consent = Completer<void>();
+      ConsentInformation.instance.requestConsentInfoUpdate(
+        ConsentRequestParameters(),
+        () {
+          ConsentForm.loadAndShowConsentFormIfRequired((error) {
+            if (!consent.isCompleted) consent.complete();
+          });
+        },
+        (error) {
           if (!consent.isCompleted) consent.complete();
-        });
-      },
-      (error) {
-        if (!consent.isCompleted) consent.complete();
-      },
-    );
-    await consent.future;
-    if (_disposed || !await ConsentInformation.instance.canRequestAds()) return;
-    await MobileAds.instance.initialize();
+        },
+      );
+      await consent.future;
+      if (_disposed || !await ConsentInformation.instance.canRequestAds()) {
+        return;
+      }
+      await MobileAds.instance.initialize();
+    } catch (e) {
+      debugPrint('Ads init skipped: $e');
+      return;
+    }
     _enabled = true;
     load();
   }

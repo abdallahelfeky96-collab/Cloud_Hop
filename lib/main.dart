@@ -18,6 +18,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'config.dart';
 import 'game/engine.dart';
@@ -34,6 +35,8 @@ import 'game/challenge.dart';
 import 'game/swipe_input.dart';
 import 'ui/screens.dart';
 import 'ui/friends.dart';
+import 'ui/lang.dart';
+import 'ui/onboarding.dart';
 
 /// Edge-to-edge background with native immersive bars and cutout support.
 Future<void> applyGameDisplay() async {
@@ -50,8 +53,9 @@ Future<void> applyGameDisplay() async {
   );
   await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   try {
-    await const MethodChannel('cloud_hop/fullscreen')
-        .invokeMethod<void>('apply');
+    await const MethodChannel(
+      'cloud_hop/fullscreen',
+    ).invokeMethod<void>('apply');
   } on MissingPluginException {
     /* Non-Android previews stay edge-to-edge. */
   } on PlatformException catch (e) {
@@ -73,14 +77,40 @@ class ProgressStoreLoader {
   static Future<Progress> load(ProgressStore store) => store.load();
 }
 
-class CloudHop extends StatelessWidget {
+class CloudHop extends StatefulWidget {
   final ProgressStore store;
   final Progress progress;
   const CloudHop({super.key, required this.store, required this.progress});
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    title: 'Cloud Hop',
-    debugShowCheckedModeBanner: false,
+  State<CloudHop> createState() => _CloudHopState();
+}
+
+class _CloudHopState extends State<CloudHop> {
+  late bool onboardingDone =
+      widget.store.prefs.getBool('onboardingDone') ?? false;
+
+  @override
+  void initState() {
+    super.initState();
+    appLang.value =
+        widget.store.prefs.getString('language') == 'ar' ? 'ar' : 'en';
+  }
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<String>(
+    valueListenable: appLang,
+    builder: (_, code, _) => MaterialApp(
+      locale: Locale(code),
+      supportedLocales: const [Locale('en'), Locale('ar')],
+      // Required for the Arabic locale: without these, MaterialApp has no
+      // MaterialLocalizations and every bottom sheet/dialog throws.
+      localizationsDelegates: const [
+        GlobalMaterialLocalizations.delegate,
+        GlobalWidgetsLocalizations.delegate,
+        GlobalCupertinoLocalizations.delegate,
+      ],
+      title: 'Cloud Hop',
+      debugShowCheckedModeBanner: false,
     theme: ThemeData(
       useMaterial3: true,
       colorScheme: ColorScheme.fromSeed(seedColor: const Color(0xff355f4b)),
@@ -116,8 +146,13 @@ class CloudHop extends StatelessWidget {
         backgroundColor: Color(0xfffff8e8),
       ),
     ),
-    home: PlayScreen(store: store, progress: progress),
-  );
+    home: onboardingDone
+        ? PlayScreen(store: widget.store, progress: widget.progress)
+        : OnboardingScreen(
+            prefs: widget.store.prefs,
+            onDone: () => setState(() => onboardingDone = true),
+          ),
+  ));
 }
 
 class PlayScreen extends StatefulWidget {
@@ -283,7 +318,7 @@ class _PlayScreenState extends State<PlayScreen>
   Future<void> _handlePushLink(Map<String, String> data) async {
     if (!mounted || _overlayOpen) return;
     if (expiredPush(data)) {
-      toast('Invite Expired');
+      toast(tr('Invite Expired'));
       return;
     }
     final kind = data['kind'];
@@ -299,11 +334,11 @@ class _PlayScreenState extends State<PlayScreen>
       try {
         await race.attachMatch(code);
         raceStarted = false;
-        toast('Joining room $code…');
+        toast(trn('Joining room {n}…', code));
         await showRace();
       } catch (e) {
         debugPrint('Push join failed: $e');
-        toast('Could not join room $code.');
+        toast(trn('Could not join room {n}.', code));
       }
       return;
     }
@@ -327,13 +362,13 @@ class _PlayScreenState extends State<PlayScreen>
     if (code.isEmpty || race.active) return;
     try {
       if (!RegExp(r'^[A-Z0-9]{6,80}$').hasMatch(code)) {
-        toast('Invite Expired');
+        toast(tr('Invite Expired'));
         return;
       }
       final snapshot = await FirebaseDatabase.instance.ref('rooms/$code').get();
       final room = snapshot.value;
       if (room is! Map || room['result'] != null || room['startAt'] != null) {
-        toast('Invite Expired');
+        toast(tr('Invite Expired'));
         return;
       }
       await race.enter(
@@ -342,11 +377,11 @@ class _PlayScreenState extends State<PlayScreen>
         character: settings.character,
       );
       raceStarted = false;
-      toast('Joining room $code…');
+      toast(trn('Joining room {n}…', code));
       await showRace();
     } catch (e) {
       debugPrint('Push join failed: $e');
-      toast('Could not join room $code.');
+      toast(trn('Could not join room {n}.', code));
     }
   }
 
@@ -360,8 +395,8 @@ class _PlayScreenState extends State<PlayScreen>
     showDialog<void>(
       context: context,
       builder: (dialog) => AlertDialog(
-        title: const Text('Room invitation'),
-        content: Text('$from invited you to room $code.'),
+        title: Text(tr('Room invitation')),
+        content: Text(tr2('{n} invited you to room {m}', from, code)),
         actions: [
           TextButton(
             onPressed: () async {
@@ -375,7 +410,7 @@ class _PlayScreenState extends State<PlayScreen>
                 }
               }
             },
-            child: const Text('Decline'),
+            child: Text(tr('Decline')),
           ),
           FilledButton(
             onPressed: () async {
@@ -383,7 +418,7 @@ class _PlayScreenState extends State<PlayScreen>
               Navigator.pop(dialog);
               await _joinFromInvite(data);
             },
-            child: const Text('Accept'),
+            child: Text(tr('Accept')),
           ),
         ],
       ),
@@ -417,9 +452,9 @@ class _PlayScreenState extends State<PlayScreen>
               Navigator.pop(dialog);
               try {
                 await social.acceptFriend(fromUid);
-                toast('$name is now your friend');
+                toast(trn('{n} is now your friend', name));
               } catch (e) {
-                toast('Could not accept request.');
+                toast(tr('Could not accept request.'));
               }
             },
             child: const Text('Accept'),
@@ -435,15 +470,15 @@ class _PlayScreenState extends State<PlayScreen>
     showDialog<void>(
       context: context,
       builder: (dialog) => AlertDialog(
-        title: const Text('Friend request accepted'),
-        content: Text('$name is now your friend.'),
+        title: Text(tr('Friend request accepted')),
+        content: Text(trn('{n} is now your friend', name)),
         actions: [
           TextButton(
             onPressed: () {
               _overlayOpen = false;
               Navigator.pop(dialog);
             },
-            child: const Text('Close'),
+            child: Text(tr('Close')),
           ),
           FilledButton(
             onPressed: () async {
@@ -451,7 +486,7 @@ class _PlayScreenState extends State<PlayScreen>
               Navigator.pop(dialog);
               await showFriends();
             },
-            child: const Text('View friends'),
+            child: Text(tr('View friends')),
           ),
         ],
       ),
@@ -539,8 +574,7 @@ class _PlayScreenState extends State<PlayScreen>
             if (entry.value is! Map) continue;
             final m = Map<String, dynamic>.from(entry.value as Map);
             if (m['status'] != 'accepted') continue;
-            if (((m['updatedAt'] as num?) ?? 0).toInt() <=
-                now - 60000) {
+            if (((m['updatedAt'] as num?) ?? 0).toInt() <= now - 60000) {
               continue;
             }
             final other = entry.key.toString();
@@ -587,8 +621,7 @@ class _PlayScreenState extends State<PlayScreen>
       // One shared throw pipeline for live play and spectating alike:
       // merge network rocks, test hits while playing, prune stale throws.
       if (race.active &&
-          (game.mode == PlayMode.playing ||
-              game.mode == PlayMode.spectate)) {
+          (game.mode == PlayMode.playing || game.mode == PlayMode.spectate)) {
         final selfId = race.uidOrNull ?? '';
         game.syncRocks(race.throwEvents, race.serverNow, selfId);
         if (game.mode == PlayMode.playing) game.checkRockHits(selfId);
@@ -658,7 +691,9 @@ class _PlayScreenState extends State<PlayScreen>
       roomOpen = false;
       rival = null;
       game.say(
-        race.arcade ? 'LAST PLAYER STANDING' : 'FIRST TO ${race.target} STEPS',
+        race.arcade
+            ? 'LAST PLAYER STANDING'
+            : 'FIRST TO ${race.target} STEPS',
       );
     }
     if (raceStarted && !race.finished) _maybeSettleRound();
@@ -828,11 +863,11 @@ class _PlayScreenState extends State<PlayScreen>
     syncAudio();
     if (rival != null) {
       resultOutcome ??= runChoice == GameChoice.arcade ? -1 : 2;
-      result = resultOutcome == 1 ? 'You win!' : 'Out of attempts';
+      result = resultOutcome == 1 ? tr('You win!') : tr('Out of attempts');
       if (resultOutcome == -1 &&
           rival!.step >= settings.raceTarget &&
           runChoice == GameChoice.race)
-        result = '${rival!.name} wins!';
+        result = trn('{n} wins!', rival!.name);
     }
     await voice.leave();
     adsBusy = true;
@@ -853,11 +888,12 @@ class _PlayScreenState extends State<PlayScreen>
     try {
       if (isHost) {
         await race.startRematch();
-        toast('Rematch started — same room!');
+        toast(tr('Rematch started — same room!'));
       } else {
+        if (race.myRematchRequested) return;
         await race.requestRematch();
         _rematchWaiting = true;
-        result = 'Rematch requested · waiting for host';
+        result = tr('Rematch requested · waiting for host');
         if (mounted) setState(() {});
       }
     } catch (e) {
@@ -1072,7 +1108,7 @@ class _PlayScreenState extends State<PlayScreen>
         if (!createdRoom) {
           await race.attachMatch(match['code'] as String);
         }
-        toast('Challenger found. Starting together…');
+        toast(tr('Challenger found. Starting together…'));
       } else {
         debugPrint(
           'Matchmaking unpaired: mode=${settings.choice} '
@@ -1083,20 +1119,23 @@ class _PlayScreenState extends State<PlayScreen>
         startBot();
         if (!offlineFromStart && widget.store.cloud) {
           if (social.lastQueueCompatible > 0) {
-            toast('Match failed to start. Playing practice rival.');
+            toast(tr('Match failed to start. Playing practice rival.'));
           } else if (social.lastQueueTotal > 0) {
             toast(
-              'Found ${social.lastQueueTotal} player(s) in other modes. '
-              'Playing practice rival.',
+              trn(
+                    'Found {n} player(s) in other modes. Playing practice rival.',
+                    social.lastQueueTotal,
+                  ),
             );
           } else {
-            toast('No players searching. Playing practice rival.');
+            toast(tr('No players searching. Playing practice rival.'));
           }
         }
       }
     } catch (e) {
       if (generation != searchGeneration || !mounted) return;
-      searchTimer?.cancel(); // Preserve the twelve-second fallback without racing its timer.
+      searchTimer
+          ?.cancel(); // Preserve the twelve-second fallback without racing its timer.
       final remaining = deadline.difference(DateTime.now());
       if (remaining > Duration.zero) await Future<void>.delayed(remaining);
       if (generation != searchGeneration || !mounted) return;
@@ -1105,8 +1144,8 @@ class _PlayScreenState extends State<PlayScreen>
       debugPrint('Matchmaking failed: $e');
       toast(
         e is OnlineServiceFailure
-            ? '${e.message} Playing a practice rival.'
-            : 'Online match unavailable. Playing a practice rival.',
+            ? trn('{n} Playing a practice rival.', e.message)
+            : tr('Online match unavailable. Playing a practice rival.'),
       );
     }
   }
@@ -1158,6 +1197,27 @@ class _PlayScreenState extends State<PlayScreen>
     if (mounted) setState(() {});
   }
 
+  /// Home-screen mode picker. Mutates [settings] in place and persists it, so
+  /// the next round starts in the chosen mode.
+  Future<void> showModes() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      builder: (_) => ModePickerSheet(
+        settings: settings,
+        onChanged: () {
+          // Keep the live mirror in step so the HUD goal label and matchmaking
+          // mode reflect the choice before the next round starts.
+          runChoice = settings.choice;
+          if (mounted) setState(() {});
+        },
+      ),
+    );
+    runChoice = settings.choice;
+    if (mounted) setState(() {});
+  }
+
   void refreshAuthFields() {
     photoUrl = widget.store.photoUrl;
     accountName =
@@ -1204,8 +1264,8 @@ class _PlayScreenState extends State<PlayScreen>
       );
       toast(
         widget.store.displayName != null
-            ? 'Signed in as ${widget.store.displayName}'
-            : 'Signed in with Google',
+            ? trn('Signed in as {n}', widget.store.displayName!)
+            : tr('Signed in with Google'),
       );
     } catch (e) {
       toast(friendlyOnlineError(e));
@@ -1307,7 +1367,7 @@ class _PlayScreenState extends State<PlayScreen>
         if (!voice.micLive) {
           toast(
             voice.lastError.isEmpty
-                ? 'Microphone is still off. Tap the mic to retry.'
+                ? tr('Microphone is still off. Tap the mic to retry.')
                 : voice.lastError,
           );
         }
@@ -1318,14 +1378,44 @@ class _PlayScreenState extends State<PlayScreen>
       toast(
         e is OnlineServiceFailure
             ? (e.code == 'not-found'
-                  ? 'Voice service is not configured yet. You can keep playing.'
+                  ? tr(
+                      'Voice service is not configured yet. You can keep playing.',
+                    )
                   : e.message)
             : detail.length > 140
-            ? 'Voice failed: ${detail.substring(0, 140)}…'
-            : 'Voice failed: $detail',
+            ? trn('Voice failed: {n}…', detail.substring(0, 140))
+            : trn('Voice failed: {n}', detail),
       );
     }
   }
+
+  /// Microphone + speaker column, shared by the live HUD and the spectator
+  /// screen so both show the same controls in the same order.
+  Widget _voiceControls() => Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      ActionOrb(
+        voice.connected && !voice.muted
+            ? Icons.mic
+            : Icons.mic_off,
+        voice.connected
+            ? (voice.muted ? tr('Unmute microphone') : tr('Mute microphone'))
+            : tr('Turn microphone on'),
+        voice.busy ? null : voiceAction,
+        badge: voice.busy
+            ? '…'
+            : voice.connected
+            ? (voice.muted ? 'OFF' : 'ON')
+            : null,
+      ),
+      ActionOrb(
+        voice.speaker ? Icons.volume_up : Icons.volume_off,
+        voice.speaker ? tr('Speaker on') : tr('Speaker off (earpiece)'),
+        voice.busy ? null : () => voice.setSpeaker(!voice.speaker),
+        badge: voice.connected ? (voice.speaker ? 'ON' : 'OFF') : null,
+      ),
+    ],
+  );
 
   void clearJoystick() {
     _joyPointers.clear();
@@ -1438,7 +1528,7 @@ class _PlayScreenState extends State<PlayScreen>
       return;
     final ammo = progress.items['rock'] ?? 0;
     if (ammo <= 0) {
-      toast('Out of rocks — buy them in the shop before the next round');
+      toast(tr('Out of rocks — buy them in the shop before the next round'));
       return;
     }
     _throwBusy = true;
@@ -1453,7 +1543,7 @@ class _PlayScreenState extends State<PlayScreen>
     );
     if (key == null) {
       progress.items['rock'] = ammo;
-      toast('Throw failed. Rock refunded.');
+      toast(tr('Throw failed. Rock refunded.'));
     } else {
       _lastThrowMs = now;
     }
@@ -1500,9 +1590,9 @@ class _PlayScreenState extends State<PlayScreen>
         progress.coins += 100;
       }
       await widget.store.save(progress);
-      toast(gift == null ? '100 coins added' : 'Gift collected');
+      toast(gift == null ? tr('100 coins added') : tr('Gift collected'));
     } else {
-      toast('No reward earned. Ad may still be loading or was closed early.');
+      toast(tr('No reward earned. Ad may still be loading or was closed early.'));
     }
     adsBusy = false;
     syncAudio();
@@ -1598,7 +1688,7 @@ class _PlayScreenState extends State<PlayScreen>
   Future<void> showShop() async {
     // Shop is pre-game only: nothing can be bought mid-round.
     if (race.active) {
-      toast('Leave the race before opening the shop.');
+      toast(tr('Leave the race before opening the shop.'));
       return;
     }
     if (game.mode == PlayMode.playing) pause();
@@ -1617,11 +1707,15 @@ class _PlayScreenState extends State<PlayScreen>
                 children: [
                   Row(
                     children: [
-                      const Text(
-                        'Sky shop',
-                        style: TextStyle(
-                          fontSize: 27,
-                          fontWeight: FontWeight.bold,
+                      Flexible(
+                        child: Text(
+                          tr('Sky shop'),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(
+                            fontSize: 27,
+                            fontWeight: FontWeight.bold,
+                          ),
                         ),
                       ),
                       const Spacer(),
@@ -1632,16 +1726,25 @@ class _PlayScreenState extends State<PlayScreen>
                       ),
                     ],
                   ),
-                  const Text(
-                    '10 steps = 1 coin · Land a flip = 10 coins',
-                    style: TextStyle(fontSize: 12),
+                  Text(
+                    tr('10 steps = 1 coin · Land a flip = 10 coins'),
+                    style: const TextStyle(fontSize: 12),
                   ),
                   const SizedBox(height: 16),
                   SegmentedButton<String>(
-                    segments: const [
-                      ButtonSegment(value: 'items', label: Text('Helpers')),
-                      ButtonSegment(value: 'skins', label: Text('Skins')),
-                      ButtonSegment(value: 'skies', label: Text('Skies')),
+                    segments: [
+                      ButtonSegment(
+                        value: 'items',
+                        label: Text(tr('Helpers')),
+                      ),
+                      ButtonSegment(
+                        value: 'skins',
+                        label: Text(tr('Skins')),
+                      ),
+                      ButtonSegment(
+                        value: 'skies',
+                        label: Text(tr('Skies')),
+                      ),
                     ],
                     selected: {category},
                     onSelectionChanged: UiSounds.change(
@@ -1682,11 +1785,11 @@ class _PlayScreenState extends State<PlayScreen>
                                     ? skinColor(item.id)
                                     : const Color(0xff588369),
                               ),
-                              title: Text(item.name),
+                              title: Text(productName(item)),
                               subtitle: Text(
-                                item.description +
+                                productDesc(item) +
                                     (category == 'items'
-                                        ? '\nIn bag: ${progress.items[item.id]}'
+                                        ? '\n${tr('In bag:')} ${progress.items[item.id]}'
                                         : ''),
                               ),
                               trailing: TextButton(
@@ -1704,13 +1807,13 @@ class _PlayScreenState extends State<PlayScreen>
                                           }
                                         },
                                 ),
-                                child: Text(
-                                  equipped
-                                      ? 'Equipped'
-                                      : owned
-                                      ? 'Equip'
-                                      : '${item.price} ◉',
-                                ),
+                              child: Text(
+                                equipped
+                                    ? tr('Equipped')
+                                    : owned
+                                    ? tr('Equip')
+                                    : '${item.price} ◉',
+                              ),
                               ),
                             ),
                           );
@@ -1728,13 +1831,13 @@ class _PlayScreenState extends State<PlayScreen>
                                 if (sheet.mounted) setSheet(() {});
                               },
                       ),
-                      icon: const CartoonIcon(Icons.ondemand_video),
-                      label: const Text('Watch ad · +100 coins'),
-                    ),
+                    icon: const CartoonIcon(Icons.ondemand_video),
+                    label: Text(tr('Watch ad · +100 coins')),
+                  ),
                   if (AppConfig.testAds)
-                    const Text(
-                      'Google test ads · no live revenue',
-                      style: TextStyle(fontSize: 10),
+                    Text(
+                      tr('Google test ads · no live revenue'),
+                      style: const TextStyle(fontSize: 10),
                     ),
                   Text(
                     widget.store.status,
@@ -1742,7 +1845,7 @@ class _PlayScreenState extends State<PlayScreen>
                   ),
                   TextButton(
                     onPressed: UiSounds.wrap(() => unawaited(ads.privacy())),
-                    child: const Text('Ad privacy choices'),
+                    child: Text(tr('Ad privacy choices')),
                   ),
                 ],
               ),
@@ -1787,7 +1890,7 @@ class _PlayScreenState extends State<PlayScreen>
             }
 
             return AlertDialog(
-              title: const Text('Live challenge'),
+              title: Text(tr('Live challenge')),
               content: SingleChildScrollView(
                 child: Column(
                   mainAxisSize: MainAxisSize.min,
@@ -1795,13 +1898,20 @@ class _PlayScreenState extends State<PlayScreen>
                     if (!race.active) ...[
                       Text(
                         settings.choice == GameChoice.arcade
-                            ? 'Arcade · last player standing · 3 attempts each'
-                            : 'Race · ${settings.raceTarget} steps · 3 attempts each',
+                            ? tr(
+                                'Arcade · last player standing · 3 attempts each',
+                              )
+                            : trn(
+                                'Race · {n} steps · 3 attempts each',
+                                settings.raceTarget,
+                              ),
                       ),
                       TextField(
                         controller: name,
                         maxLength: 16,
-                        decoration: const InputDecoration(labelText: 'Name'),
+                        decoration: InputDecoration(
+                          labelText: tr('Name'),
+                        ),
                       ),
                       FilledButton(
                         onPressed: UiSounds.wrap(
@@ -1818,14 +1928,14 @@ class _PlayScreenState extends State<PlayScreen>
                                   ),
                                 ),
                         ),
-                        child: const Text('Create room'),
+                        child: Text(tr('Create room')),
                       ),
                       TextField(
                         controller: code,
                         maxLength: 6,
                         textCapitalization: TextCapitalization.characters,
-                        decoration: const InputDecoration(
-                          labelText: 'Room code',
+                        decoration: InputDecoration(
+                          labelText: tr('Room code'),
                         ),
                       ),
                       TextButton(
@@ -1840,7 +1950,7 @@ class _PlayScreenState extends State<PlayScreen>
                                   ),
                                 ),
                         ),
-                        child: const Text('Join room'),
+                        child: Text(tr('Join room')),
                       ),
                     ] else ...[
                       SelectableText(
@@ -1860,7 +1970,7 @@ class _PlayScreenState extends State<PlayScreen>
                                 text: 'Join my Cloud Hop room: ${race.code}',
                               ),
                             );
-                            toast('Room invitation copied');
+                            toast(tr('Room invitation copied'));
                           }),
                           ActionOrb(
                             Icons.person_add,
@@ -1869,9 +1979,11 @@ class _PlayScreenState extends State<PlayScreen>
                           ),
                         ],
                       ),
-                      const Text(
-                        'Use the microphone at the bottom-right during gameplay to talk or mute.',
-                        style: TextStyle(fontSize: 12),
+                      Text(
+                        tr(
+                          'Use the microphone at the bottom-right during gameplay to talk or mute.',
+                        ),
+                        style: const TextStyle(fontSize: 12),
                       ),
                       if (voice.connected)
                         TextButton(
@@ -1879,7 +1991,7 @@ class _PlayScreenState extends State<PlayScreen>
                             await voice.leave();
                             if (dialog.mounted) setDialog(() {});
                           }),
-                          child: const Text('Leave voice'),
+                          child: Text(tr('Leave voice')),
                         ),
                       ...race.peers.map(
                         (p) => ListTile(
@@ -1900,10 +2012,10 @@ class _PlayScreenState extends State<PlayScreen>
                                     action(race.start);
                                   },
                           ),
-                          child: const Text('Start race'),
+                          child: Text(tr('Start race')),
                         ),
                       if (race.startAt > 0 && !race.started)
-                        const Text('Starting together…'),
+                        Text(tr('Starting together…')),
                       TextButton(
                         onPressed: UiSounds.wrap(
                           () => action(() async {
@@ -1913,7 +2025,7 @@ class _PlayScreenState extends State<PlayScreen>
                             game.mode = PlayMode.menu;
                           }),
                         ),
-                        child: const Text('Leave room'),
+                        child: Text(tr('Leave room')),
                       ),
                     ],
                     if (error.isNotEmpty)
@@ -2039,13 +2151,13 @@ class _PlayScreenState extends State<PlayScreen>
                                 children: [
                                   ActionOrb(
                                     Icons.arrow_back_rounded,
-                                    'Back to home',
+                                    tr('Back to home'),
                                     goHome,
                                   ),
                                   const Spacer(),
                                   ActionOrb(
                                     Icons.rocket_launch_rounded,
-                                    'Rocket',
+                                    tr('Rocket'),
                                     progress.items['rocket']! > 0
                                         ? () => game.use('rocket')
                                         : null,
@@ -2053,7 +2165,7 @@ class _PlayScreenState extends State<PlayScreen>
                                   ),
                                   ActionOrb(
                                     Icons.horizontal_rule_rounded,
-                                    'Trampoline',
+                                    tr('Trampoline'),
                                     progress.items['spring']! > 0
                                         ? () => game.use('spring')
                                         : null,
@@ -2061,11 +2173,13 @@ class _PlayScreenState extends State<PlayScreen>
                                   ),
                                   ActionOrb(
                                     Icons.favorite_rounded,
-                                    'Automatic extra life',
+                                    tr('Automatic extra life'),
                                     () => toast(
-                                      classicMode
-                                          ? 'Each fall uses one owned life, until none remain.'
-                                          : 'Everyone starts with three attempts. Inventory lives are not spent.',
+                                      tr(
+                                        classicMode
+                                            ? 'Each fall uses one owned life, until none remain.'
+                                            : 'Everyone starts with three attempts. Inventory lives are not spent.',
+                                      ),
                                     ),
                                     badge: '${game.availableLives}',
                                   ),
@@ -2075,7 +2189,11 @@ class _PlayScreenState extends State<PlayScreen>
                                 children: [
                                   const SizedBox(width: 12),
                                   Text(
-                                    'STEP ${game.highest} · LV ${game.level}',
+                                    tr2(
+                                      'STEP {n} · LV {m}',
+                                      game.highest,
+                                      game.level,
+                                    ),
                                     style: const TextStyle(
                                       fontWeight: FontWeight.bold,
                                       color: ink,
@@ -2085,20 +2203,29 @@ class _PlayScreenState extends State<PlayScreen>
                                   if (race.active)
                                     Text(
                                       race.arcade
-                                          ? 'Last standing'
-                                          : 'Goal ${race.target}',
+                                          ? tr('Last standing')
+                                          : trn(
+                                              'Goal {n}',
+                                              race.target,
+                                            ),
                                     ),
                                   if (rival != null)
                                     Text(
                                       runChoice == GameChoice.arcade
-                                          ? '${rival!.name} · Arcade'
-                                          : 'Goal ${settings.raceTarget}',
+                                          ? trn(
+                                              '{n} · Arcade',
+                                              rival!.name,
+                                            )
+                                          : trn(
+                                              'Goal {n}',
+                                              settings.raceTarget,
+                                            ),
                                       style: const TextStyle(fontSize: 12),
                                     ),
                                   if (classicMode)
                                     ActionOrb(
                                       Icons.pause_rounded,
-                                      'Pause',
+                                      tr('Pause'),
                                       pause,
                                     ),
                                 ],
@@ -2112,7 +2239,7 @@ class _PlayScreenState extends State<PlayScreen>
                             left: 18,
                             right: 18,
                             child: Text(
-                              game.message,
+                              shout(game.message),
                               textAlign: TextAlign.center,
                               style: const TextStyle(
                                 color: ink,
@@ -2124,41 +2251,7 @@ class _PlayScreenState extends State<PlayScreen>
                           Positioned(
                             bottom: 24,
                             right: 16,
-                            child: Column(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                ActionOrb(
-                                  voice.connected && !voice.muted
-                                      ? Icons.mic
-                                      : Icons.mic_off,
-                                  voice.connected
-                                      ? (voice.muted
-                                            ? 'Unmute microphone'
-                                            : 'Mute microphone')
-                                      : 'Turn microphone on',
-                                  voice.busy ? null : voiceAction,
-                                  badge: voice.busy
-                                      ? '…'
-                                      : voice.connected
-                                      ? (voice.muted ? 'OFF' : 'ON')
-                                      : null,
-                                ),
-                                ActionOrb(
-                                  voice.speaker
-                                      ? Icons.volume_up
-                                      : Icons.volume_off,
-                                  voice.speaker
-                                      ? 'Speaker on'
-                                      : 'Speaker off (earpiece)',
-                                  voice.busy
-                                      ? null
-                                      : () => voice.setSpeaker(!voice.speaker),
-                                  badge: voice.connected
-                                      ? (voice.speaker ? 'ON' : 'OFF')
-                                      : null,
-                                ),
-                              ],
-                            ),
+                            child: _voiceControls(),
                           ),
                         if (game.adGift != null &&
                             !game.adGift!.claimed &&
@@ -2168,14 +2261,86 @@ class _PlayScreenState extends State<PlayScreen>
                             right: 16,
                             child: ActionOrb(
                               Icons.card_giftcard,
-                              'Watch ad for gift',
+                              tr('Watch ad for gift'),
                               () => rewardCoins(gift: game.adGift),
                             ),
                           ),
                       ],
                     ),
                   ),
-                if (!playing)
+                if (game.mode == PlayMode.spectate)
+                  SafeArea(
+                    child: Stack(
+                      children: [
+                        Align(
+                          alignment: Alignment.topCenter,
+                          child: Padding(
+                            padding: const EdgeInsets.only(top: 16),
+                            child: DecoratedBox(
+                              decoration: BoxDecoration(
+                                color: const Color(
+                                  0xfffdf5dc,
+                                ).withValues(alpha: .92),
+                                borderRadius: BorderRadius.circular(24),
+                                border: Border.all(
+                                  color: const Color(0xffb88954),
+                                  width: 2,
+                                ),
+                                boxShadow: const [
+                                  BoxShadow(
+                                    color: Color(0x33493625),
+                                    blurRadius: 8,
+                                    offset: Offset(0, 3),
+                                  ),
+                                ],
+                              ),
+                              child: Padding(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 18,
+                                  vertical: 9,
+                                ),
+                                child: Text(
+                                  'WATCHING  ·  ${_spectateLeader ?? 'THE ROUND'}',
+                                  style: const TextStyle(
+                                    color: ink,
+                                    fontWeight: FontWeight.w900,
+                                    letterSpacing: 1,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                        // Stones: middle of the screen on the right.
+                        if (race.active)
+                          Positioned.fill(
+                            child: Align(
+                              alignment: Alignment.centerRight,
+                              child: Padding(
+                                padding: const EdgeInsets.only(right: 16),
+                                child: ActionOrb(
+                                  Icons.circle,
+                                  tr('Throw rocks'),
+                                  race.finished || _throwBusy
+                                      ? null
+                                      : throwRockAtLeader,
+                                  badge: '${progress.items['rock'] ?? 0}',
+                                  color: const Color(0xff6b5a4e),
+                                ),
+                              ),
+                            ),
+                          ),
+                        // Mic above speaker, bottom right.
+                        if (race.active)
+                          Positioned(
+                            bottom: 24,
+                            right: 16,
+                            child: _voiceControls(),
+                          ),
+                      ],
+                    ),
+                  )
+                else if (!playing)
                   HomeOverlay(
                     mode: game.mode,
                     settings: settings,
@@ -2187,8 +2352,8 @@ class _PlayScreenState extends State<PlayScreen>
                     result:
                         race.active && race.finished && race.peers.isNotEmpty
                         ? (race.winner.isEmpty
-                              ? 'Draw!'
-                              : '${race.winnerName} wins!')
+                              ? tr('Draw!')
+                              : trn('{n} wins!', race.winnerName))
                         : result,
                     photoUrl: photoUrl,
                     accountName: accountName,
@@ -2222,6 +2387,7 @@ class _PlayScreenState extends State<PlayScreen>
                     profile: () {
                       showProfile();
                     },
+                    modes: showModes,
                     google: () {
                       signInFromHome();
                     },
@@ -2234,7 +2400,8 @@ class _PlayScreenState extends State<PlayScreen>
                     rockAmmo: progress.items['rock'] ?? 0,
                     inRace: race.active,
                     throwRock: throwRockFromBar,
-                    rematchWaiting: _rematchWaiting,
+                    rematchWaiting: _rematchWaiting || race.myRematchRequested,
+                    rematchRequested: race.myRematchRequested,
                     rematch: race.finished ? playAgainInRoom : null,
                     voiceLabel: voice.connected
                         ? (voice.muted ? 'Unmute' : 'Mute')

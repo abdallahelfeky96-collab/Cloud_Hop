@@ -44,7 +44,7 @@ String friendlyOnlineError(Object e) {
 enum ControlMode { swipe, joystick }
 
 class PlayerSettings {
-  String name, country, city;
+  String name, country, city, language;
   bool sound;
   String character;
   int raceTarget;
@@ -56,7 +56,16 @@ class PlayerSettings {
       country = prefs.getString('country') ?? 'Egypt',
       city = prefs.getString('city') ?? 'Cairo',
       sound = prefs.getBool('sound') ?? true,
-      character = prefs.getString('character') == 'female' ? 'female' : 'male',
+      language = prefs.getString('language') == 'ar' ? 'ar' : 'en',
+      character =
+          [
+            'male',
+            'female',
+            'male_round',
+            'female_round',
+          ].contains(prefs.getString('character'))
+          ? prefs.getString('character')!
+          : 'male',
       raceTarget =
           ((prefs.getInt('raceTarget') ?? 100) ~/ 100).clamp(1, 10).toInt() *
           100,
@@ -67,6 +76,7 @@ class PlayerSettings {
     await prefs.setString('country', country);
     await prefs.setString('city', city);
     await prefs.setBool('sound', sound);
+    await prefs.setString('language', language);
     await prefs.setString('character', character);
     await prefs.setInt('raceTarget', raceTarget);
     await prefs.setInt('choice', choice.index);

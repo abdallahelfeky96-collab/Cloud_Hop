@@ -179,7 +179,8 @@ class GamePainter extends CustomPainter {
         );
       }
 
-      final female = character == 'female';
+      final female = character.startsWith('female');
+      final rounded = character.endsWith('_round');
       final shoe = female ? const Color(0xffed84ae) : const Color(0xfffffff4);
       limb(
         const Offset(-7, 6),
@@ -211,24 +212,37 @@ class GamePainter extends CustomPainter {
         Offset(18, -2 - swing * 3),
         5,
       );
+      // Soft rounded palms keep the supplied characters readable at game scale.
+      for (final side in [-1.0, 1.0]) {
+        final handX = side * 18;
+        final handY = -2 + (side < 0 ? swing : -swing) * 3;
+        final handSize = rounded ? 5.0 : 3.8;
+        oval(c, handX, handY, handSize, handSize, const Color(0xff502708));
+        oval(
+          c,
+          handX,
+          handY - .4,
+          handSize * .77,
+          handSize * .77,
+          const Color(0xffffc451),
+        );
+      }
       final clothes = Path()
         ..moveTo(-10, -17)
         ..lineTo(10, -17)
         ..lineTo(female ? 16 : 12, female ? 9 : 3)
         ..lineTo(female ? -16 : -12, female ? 9 : 3)
         ..close();
-      c.drawPath(
-        clothes,
-        Paint()
-          ..color = female ? const Color(0xffffa5c5) : const Color(0xfffffff7),
-      );
-      c.drawPath(
-        clothes,
-        Paint()
-          ..color = const Color(0xff664536)
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 1.4,
-      );
+      if (female) {
+        c.drawPath(clothes, Paint()..color = const Color(0xffffa5c5));
+        c.drawPath(
+          clothes,
+          Paint()
+            ..color = const Color(0xff664536)
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = 1.4,
+        );
+      }
       if (female) {
         pill(c, -10, -3, 20, 2, const Color(0xffed75a3), 1);
         for (final x in [-8.0, 0.0, 8.0])
@@ -240,9 +254,28 @@ class GamePainter extends CustomPainter {
               ..strokeWidth = .8,
           );
       } else {
-        // Short white sleeves.
-        pill(c, -16, -15, 7, 8, const Color(0xfffffff7), 2);
-        pill(c, 9, -15, 7, 8, const Color(0xfffffff7), 2);
+        // Short sleeves connect directly into the fitted shirt.
+        for (final side in [-1.0, 1.0]) {
+          final sleeve = Path()
+            ..moveTo(side * 9, -16)
+            ..quadraticBezierTo(side * 14, -15, side * 16, -10);
+          c.drawPath(
+            sleeve,
+            Paint()
+              ..color = const Color(0xff664536)
+              ..style = PaintingStyle.stroke
+              ..strokeCap = StrokeCap.round
+              ..strokeWidth = 8,
+          );
+          c.drawPath(
+            sleeve,
+            Paint()
+              ..color = const Color(0xfffffff7)
+              ..style = PaintingStyle.stroke
+              ..strokeCap = StrokeCap.round
+              ..strokeWidth = 5,
+          );
+        }
         // Fitted shirt tailored like the female dress cut: outlined torso
         // with side seams, then a denim waistband and shorts. No chain.
         final shirt = Path()
@@ -251,10 +284,7 @@ class GamePainter extends CustomPainter {
           ..lineTo(14, 7)
           ..lineTo(-14, 7)
           ..close();
-        c.drawPath(
-          shirt,
-          Paint()..color = const Color(0xfffffff7),
-        );
+        c.drawPath(shirt, Paint()..color = const Color(0xfffffff7));
         c.drawPath(
           shirt,
           Paint()

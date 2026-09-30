@@ -9,6 +9,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:cloud_hop/game/engine.dart';
+import 'package:cloud_hop/game/challenge.dart';
 import 'package:cloud_hop/services/social.dart';
 import 'package:cloud_hop/ui/screens.dart';
 
@@ -72,6 +73,7 @@ void main() {
                 reward: noop,
                 preferences: noop,
                 profile: noop,
+                modes: noop,
                 cancelSearch: noop,
               ),
             ),
@@ -155,4 +157,244 @@ void main() {
       );
     });
   }
+
+  testWidgets('result screen offers rematch to the host and a guest', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = PlayerSettings(await SharedPreferences.getInstance());
+    tester.view.resetPhysicalSize();
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await (FontLoader(
+      'MaterialIcons',
+    )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
+    void noop() {}
+
+    Widget overlay({
+      required bool inRace,
+      required bool host,
+      bool waiting = false,
+    }) =>
+        MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(disableAnimations: true),
+            child: child!,
+          ),
+          theme: ThemeData(
+            useMaterial3: true,
+            colorScheme: ColorScheme.fromSeed(seedColor: teal),
+          ),
+          home: Scaffold(
+            body: HomeOverlay(
+              mode: PlayMode.over,
+              settings: settings,
+              coins: 420,
+              steps: 85,
+              earned: 38,
+              busy: false,
+              searching: false,
+              result: 'You win! · Practice bot',
+              play: noop,
+              home: noop,
+              room: noop,
+              shop: noop,
+              friends: noop,
+              reward: noop,
+              preferences: noop,
+              profile: noop,
+              modes: noop,
+              cancelSearch: noop,
+              inRace: inRace,
+              spectateHost: host,
+              rematchWaiting: waiting,
+            ),
+          ),
+        );
+
+    // Host in a room restarts the same room.
+    await tester.pumpWidget(overlay(inRace: true, host: true));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Play again'), findsOneWidget);
+
+    // A guest asks the host instead.
+    await tester.pumpWidget(overlay(inRace: true, host: false));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Request rematch'), findsOneWidget);
+
+    // After requesting, the guest waits.
+    await tester.pumpWidget(overlay(inRace: true, host: false, waiting: true));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Request rematch'), findsNothing);
+    expect(find.text('Waiting for host…'), findsOneWidget);
+
+    // Solo practice keeps the plain Play again button.
+    await tester.pumpWidget(overlay(inRace: false, host: false));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Play again'), findsOneWidget);
+    expect(find.text('Request rematch'), findsNothing);
+  });
+
+  testWidgets('avatar ticks once the player has requested a rematch', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = PlayerSettings(await SharedPreferences.getInstance());
+    tester.view.resetPhysicalSize();
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await (FontLoader(
+      'MaterialIcons',
+    )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
+    void noop() {}
+
+    Widget avatar({required bool requested}) => MaterialApp(
+      builder: (context, child) => MediaQuery(
+        data: MediaQuery.of(context).copyWith(disableAnimations: true),
+        child: child!,
+      ),
+      theme: ThemeData(
+        useMaterial3: true,
+        colorScheme: ColorScheme.fromSeed(seedColor: teal),
+      ),
+      home: Scaffold(
+        body: Center(
+          child: ProfileAvatar(
+            photoUrl: null,
+            accountName: 'Player',
+            busy: false,
+            rematchRequested: requested,
+          ),
+        ),
+      ),
+    );
+
+    final tick = find.byIcon(Icons.check_rounded);
+    await tester.pumpWidget(avatar(requested: false));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(tick, findsNothing);
+
+    await tester.pumpWidget(avatar(requested: true));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(tick, findsOneWidget);
+  });
+
+  testWidgets('home Modes button lists every mode and applies the choice', (
+    tester,
+  ) async {
+    SharedPreferences.setMockInitialValues({});
+    final prefs = await SharedPreferences.getInstance();
+    final settings = PlayerSettings(prefs);
+    expect(settings.choice, GameChoice.classic);
+    tester.view.resetPhysicalSize();
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    await (FontLoader(
+      'MaterialIcons',
+    )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
+    void noop() {}
+    var changed = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        builder: (context, child) => MediaQuery(
+          data: MediaQuery.of(context).copyWith(disableAnimations: true),
+          child: child!,
+        ),
+        theme: ThemeData(
+          useMaterial3: true,
+          colorScheme: ColorScheme.fromSeed(seedColor: teal),
+        ),
+        home: Scaffold(
+          body: StatefulBuilder(
+            builder: (ctx, setHost) => HomeOverlay(
+              mode: PlayMode.menu,
+              settings: settings,
+              coins: 420,
+              steps: 85,
+              earned: 38,
+              busy: false,
+              searching: false,
+              result: '',
+              play: noop,
+              home: noop,
+              room: noop,
+              shop: noop,
+              friends: noop,
+              reward: noop,
+              preferences: noop,
+              profile: noop,
+              modes: () {
+                showModalBottomSheet<void>(
+                  context: ctx,
+                  isScrollControlled: true,
+                  builder: (_) => ModePickerSheet(
+                    settings: settings,
+                    onChanged: () {
+                      changed++;
+                      setHost(() {});
+                    },
+                  ),
+                );
+              },
+              cancelSearch: noop,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.text('Modes'), findsOneWidget);
+    // The current mode stays visible on the home screen.
+    expect(find.text('Classic'), findsOneWidget);
+
+    await tester.tap(find.text('Modes'));
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    // Every mode is listed inside the popup.
+    final sheet = find.byType(ModePickerSheet);
+    for (final name in modeNames) {
+      expect(
+        find.descendant(of: sheet, matching: find.text(name)),
+        findsOneWidget,
+        reason: name,
+      );
+    }
+
+    await tester.tap(
+      find.descendant(
+        of: sheet,
+        matching: find.text('First to the finish · three attempts each'),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(settings.choice, GameChoice.race);
+    expect(changed, 1);
+    // Race exposes the finish-line picker.
+    expect(
+      find.descendant(of: sheet, matching: find.text('Race finish line')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('Done'));
+    await tester.pumpAndSettle();
+    expect(sheet, findsNothing);
+    // Home screen now reflects the new mode.
+    expect(find.text('Race'), findsOneWidget);
+    // Persisted for the next launch.
+    expect(prefs.getInt('choice'), GameChoice.race.index);
+  });
 }

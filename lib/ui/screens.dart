@@ -1,3 +1,6 @@
+import 'dart:async';
+
+import 'lang.dart';
 import 'ui_sounds.dart';
 import 'cartoon_controls.dart';
 import 'character_art.dart';
@@ -12,6 +15,11 @@ import '../services/social.dart';
 
 const ink = Color(0xff213c4c), teal = Color(0xff207e78);
 const modeNames = ['Classic', 'Arcade', 'Race'];
+const modeDescriptions = [
+  'Climb at your own pace',
+  'Last player standing · three attempts each',
+  'First to the finish · three attempts each',
+];
 
 class ActionOrb extends StatelessWidget {
   final IconData icon;
@@ -64,46 +72,74 @@ class ProfileAvatar extends StatelessWidget {
   final String? photoUrl, accountName;
   final bool busy;
   final VoidCallback? onTap;
+  /// Green tick over the avatar once this player has asked for a rematch.
+  final bool rematchRequested;
   const ProfileAvatar({
     super.key,
     required this.photoUrl,
     required this.accountName,
     required this.busy,
     this.onTap,
+    this.rematchRequested = false,
   });
   @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.all(4),
-    child: photoUrl == null
-        ? CartoonButton(
-            art: CartoonArt.profile,
-            label: accountName ?? 'Player profile',
-            onTap: UiSounds.wrap(busy ? null : onTap),
-            size: 60,
-          )
-        : Tooltip(
-            message: accountName ?? 'Sign in with Google',
-            child: InkWell(
-              customBorder: const CircleBorder(),
+  Widget build(BuildContext context) {
+    final avatar = Padding(
+      padding: const EdgeInsets.all(4),
+      child: photoUrl == null
+          ? CartoonButton(
+              art: CartoonArt.profile,
+              label: accountName ?? 'Player profile',
               onTap: UiSounds.wrap(busy ? null : onTap),
-              child: CircleAvatar(
-                radius: 30,
-                backgroundColor: Colors.white.withValues(alpha: .94),
-                backgroundImage: photoUrl != null
-                    ? NetworkImage(photoUrl!)
-                    : null,
-                onBackgroundImageError: photoUrl != null ? (_, _) {} : null,
-                child: photoUrl == null
-                    ? const CartoonIcon(
-                        Icons.person_rounded,
-                        size: 32,
-                        color: ink,
-                      )
-                    : null,
+              size: 60,
+            )
+          : Tooltip(
+              message: accountName ?? 'Sign in with Google',
+              child: InkWell(
+                customBorder: const CircleBorder(),
+                onTap: UiSounds.wrap(busy ? null : onTap),
+                child: CircleAvatar(
+                  radius: 30,
+                  backgroundColor: Colors.white.withValues(alpha: .94),
+                  backgroundImage: photoUrl != null
+                      ? NetworkImage(photoUrl!)
+                      : null,
+                  onBackgroundImageError: photoUrl != null ? (_, _) {} : null,
+                  child: photoUrl == null
+                      ? const CartoonIcon(
+                          Icons.person_rounded,
+                          size: 32,
+                          color: ink,
+                        )
+                      : null,
+                ),
               ),
             ),
+    );
+    if (!rematchRequested) return avatar;
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        avatar,
+        Positioned(
+          right: 0,
+          bottom: 0,
+          child: Container(
+            padding: const EdgeInsets.all(2),
+            decoration: const BoxDecoration(
+              color: teal,
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(
+              Icons.check_rounded,
+              size: 16,
+              color: Colors.white,
+            ),
           ),
-  );
+        ),
+      ],
+    );
+  }
 }
 
 /// Bottom sheet for Google sign-in / sign-out and profile display.
@@ -185,10 +221,12 @@ class _ProfileSheetState extends State<ProfileSheet> {
                       widget.onChanged();
                     }),
             ),
-            child: const Text('Retry Firebase access'),
+            child: Text(tr('Retry Firebase access')),
           ),
           Text(
-            signed ? (store.displayName ?? 'Google player') : 'Guest climber',
+            signed
+                ? (store.displayName ?? tr('Google player'))
+                : tr('Guest climber'),
             style: const TextStyle(
               fontSize: 22,
               fontWeight: FontWeight.w800,
@@ -198,9 +236,9 @@ class _ProfileSheetState extends State<ProfileSheet> {
           if (signed && store.email != null)
             SelectableText(store.email!, style: const TextStyle(color: teal)),
           if (!signed)
-            const Text(
-              'Sign in to sync progress and race online.',
-              style: TextStyle(color: teal, fontSize: 12),
+            Text(
+              tr('Sign in to sync progress and race online.'),
+              style: const TextStyle(color: teal, fontSize: 12),
             ),
           if (error != null)
             Padding(
@@ -228,13 +266,15 @@ class _ProfileSheetState extends State<ProfileSheet> {
                 : CartoonIcon(
                     signed ? Icons.logout_rounded : Icons.login_rounded,
                   ),
-            label: Text(signed ? 'Sign out' : 'Sign in with Google'),
+            label: Text(
+              signed ? tr('Sign out') : tr('Sign in with Google'),
+            ),
           ),
-          const Padding(
-            padding: EdgeInsets.only(top: 8),
+          Padding(
+            padding: const EdgeInsets.only(top: 8),
             child: Text(
-              'Linking keeps your current coins and skins.',
-              style: TextStyle(fontSize: 11, color: teal),
+              tr('Linking keeps your current coins and skins.'),
+              style: const TextStyle(fontSize: 11, color: teal),
             ),
           ),
         ],
@@ -391,7 +431,7 @@ class _MatchFaceoffState extends State<MatchFaceoff>
           backgroundColor: Colors.white,
           child: CartoonIcon(Icons.smart_toy_rounded, size: 32, color: ink),
         ),
-        'Mystery rival',
+        tr('Mystery rival'),
       ),
     ],
   );
@@ -447,9 +487,9 @@ class ResultFaceoff extends StatelessWidget {
               color: const Color(0xffc98a1b),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Text(
-              'WINNER',
-              style: TextStyle(
+            child: Text(
+              tr('WINNER'),
+              style: const TextStyle(
                 color: Colors.white,
                 fontSize: 10,
                 fontWeight: FontWeight.w900,
@@ -464,9 +504,9 @@ class ResultFaceoff extends StatelessWidget {
               color: teal,
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Text(
-              'DRAW',
-              style: TextStyle(
+            child: Text(
+              tr('DRAW'),
+              style: const TextStyle(
                 color: Colors.white,
                 fontSize: 10,
                 fontWeight: FontWeight.w900,
@@ -498,7 +538,7 @@ class ResultFaceoff extends StatelessWidget {
             fontWeight: FontWeight.w900,
           ),
         ),
-        const Text('steps', style: TextStyle(color: teal, fontSize: 11)),
+        Text(tr('steps'), style: const TextStyle(color: teal, fontSize: 11)),
       ],
     );
   }
@@ -532,9 +572,9 @@ class ResultFaceoff extends StatelessWidget {
           padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
           child: Column(
             children: [
-              const Text(
-                'VS',
-                style: TextStyle(
+              Text(
+                tr('VS'),
+                style: const TextStyle(
                   color: ink,
                   fontSize: 16,
                   fontStyle: FontStyle.italic,
@@ -588,6 +628,8 @@ class HomeOverlay extends StatelessWidget {
   final String? spectateLeader, voiceLabel, voiceBadge;
   final bool spectateHost, rematchWaiting, inRace;
   final int spectateVotes, rockAmmo;
+  /// This guest asked for a rematch: ticks the avatar on the home screen.
+  final bool rematchRequested;
   final VoidCallback play,
       home,
       room,
@@ -596,6 +638,7 @@ class HomeOverlay extends StatelessWidget {
       reward,
       preferences,
       profile,
+      modes,
       cancelSearch;
   final VoidCallback? google, revive, decline, rematch, voiceToggle, throwRock;
   const HomeOverlay({
@@ -623,6 +666,7 @@ class HomeOverlay extends StatelessWidget {
     this.spectateVotes = 0,
     this.rockAmmo = 0,
     this.inRace = false,
+    this.rematchRequested = false,
     this.rematchWaiting = false,
     this.voiceLabel,
     this.voiceBadge,
@@ -634,6 +678,7 @@ class HomeOverlay extends StatelessWidget {
     required this.reward,
     required this.preferences,
     required this.profile,
+    required this.modes,
     this.google,
     this.revive,
     this.decline,
@@ -645,6 +690,12 @@ class HomeOverlay extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isHome = mode == PlayMode.menu;
+    // Result screen: the host restarts the same room, a guest asks for it.
+    final resultAction = rematchWaiting
+        ? tr('Waiting for host…')
+        : inRace && !spectateHost
+        ? tr('Request rematch')
+        : tr('Play again');
     return DecoratedBox(
       // Translucent so the live gameplay demo (attract mode) shows through.
       decoration: BoxDecoration(
@@ -675,6 +726,7 @@ class HomeOverlay extends StatelessWidget {
                       accountName: accountName,
                       busy: authBusy,
                       onTap: UiSounds.wrap(profile),
+                      rematchRequested: rematchRequested,
                     ),
                     const SizedBox(width: 4),
                     const Expanded(child: CloudHopLogo(height: 76)),
@@ -702,7 +754,7 @@ class HomeOverlay extends StatelessWidget {
                           mainAxisAlignment: MainAxisAlignment.center,
                           children: [
                             Text(
-                              result.isEmpty ? 'Nice climbing!' : result,
+                              result.isEmpty ? tr('Nice climbing!') : result,
                               textAlign: TextAlign.center,
                               style: const TextStyle(
                                 color: ink,
@@ -718,8 +770,9 @@ class HomeOverlay extends StatelessWidget {
                                 vertical: 18,
                               ),
                               decoration: BoxDecoration(
-                                color: const Color(0xfffffbeb)
-                                    .withValues(alpha: .9),
+                                color: const Color(
+                                  0xfffffbeb,
+                                ).withValues(alpha: .9),
                                 borderRadius: BorderRadius.circular(28),
                                 border: Border.all(
                                   color: const Color(0xffe4c98a),
@@ -794,21 +847,17 @@ class HomeOverlay extends StatelessWidget {
                                     )
                                   : CartoonButton(
                                       art: CartoonArt.play,
-                                      label: rematchWaiting
-                                          ? 'Waiting for host'
-                                          : 'Play again',
-                                      onTap: UiSounds.wrap(
-                                        rematchWaiting ? null : play,
-                                      ),
+                                      label: resultAction,
+                                      onTap: rematchWaiting
+                                          ? null
+                                          : UiSounds.wrap(play),
                                       size: 128,
                                       idle: true,
                                     ),
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              rematchWaiting
-                                  ? 'Waiting for host…'
-                                  : 'Play again',
+                              resultAction,
                               style: const TextStyle(
                                 fontSize: 23,
                                 color: ink,
@@ -816,6 +865,14 @@ class HomeOverlay extends StatelessWidget {
                               ),
                             ),
                             const SizedBox(height: 12),
+                            if (inRace &&
+                                !spectateHost &&
+                                spectateVotes > 0 &&
+                                !rematchWaiting)
+                              Text(
+                                trn('{n} want a rematch', spectateVotes),
+                                style: const TextStyle(color: teal, fontSize: 12),
+                              ),
                           ],
                         ),
                       ),
@@ -834,19 +891,19 @@ class HomeOverlay extends StatelessWidget {
                         playerName: settings.name,
                       ),
                       const SizedBox(height: 20),
-                      const Text(
-                        'Finding your challenger…',
-                        style: TextStyle(fontSize: 20, color: ink),
+                      Text(
+                        tr('Finding your challenger…'),
+                        style: const TextStyle(fontSize: 20, color: ink),
                       ),
                       const SizedBox(height: 8),
                       TextButton(
                         onPressed: UiSounds.wrap(cancelSearch),
-                        child: const Text('Cancel'),
+                        child: Text(tr('Cancel')),
                       ),
                     ] else if (reviveSeconds != null) ...[
-                      const Text(
-                        'Keep climbing?',
-                        style: TextStyle(
+                      Text(
+                        tr('Keep climbing?'),
+                        style: const TextStyle(
                           fontSize: 25,
                           color: ink,
                           fontWeight: FontWeight.w800,
@@ -888,16 +945,16 @@ class HomeOverlay extends StatelessWidget {
                           minimumSize: const Size(230, 58),
                         ),
                         icon: const CartoonSprite(CartoonArt.revive, size: 40),
-                        label: const Text('Watch ad · Revive'),
+                        label: Text(tr('Watch ad · Revive')),
                       ),
                       TextButton(
                         onPressed: UiSounds.wrap(busy ? null : decline),
-                        child: const Text('No thanks'),
+                        child: Text(tr('No thanks')),
                       ),
                     ] else if (mode == PlayMode.spectate) ...[
-                      const Text(
-                        'SPECTATING',
-                        style: TextStyle(
+                      Text(
+                        tr('SPECTATING'),
+                        style: const TextStyle(
                           fontSize: 25,
                           color: ink,
                           fontWeight: FontWeight.w800,
@@ -907,14 +964,14 @@ class HomeOverlay extends StatelessWidget {
                       const SizedBox(height: 4),
                       Text(
                         spectateLeader == null
-                            ? 'Watching the round…'
-                            : 'Watching ${spectateLeader!}',
+                            ? tr('Watching the round…')
+                            : trn('Watching {n}', spectateLeader!),
                         style: const TextStyle(color: teal, fontSize: 15),
                       ),
                       const SizedBox(height: 8),
-                      const Text(
-                        'Send a diagonal meteor shower',
-                        style: TextStyle(color: ink, fontSize: 12),
+                      Text(
+                        tr('Send a diagonal meteor shower'),
+                        style: const TextStyle(color: ink, fontSize: 12),
                       ),
                       const SizedBox(height: 8),
                       FilledButton.icon(
@@ -928,8 +985,8 @@ class HomeOverlay extends StatelessWidget {
                         ),
                         label: Text(
                           rockAmmo > 0
-                              ? 'Throw Rocks ($rockAmmo left)'
-                              : 'Throw Rocks (500 coins each)',
+                              ? trn('Throw Rocks ({n} left)', rockAmmo)
+                              : tr('Throw Rocks (500 coins each)'),
                         ),
                       ),
                       const SizedBox(height: 12),
@@ -954,20 +1011,20 @@ class HomeOverlay extends StatelessWidget {
                         icon: const CartoonSprite(CartoonArt.room, size: 40),
                         label: Text(
                           rematchWaiting
-                              ? 'Waiting for host…'
+                              ? tr('Waiting for host…')
                               : spectateHost
-                              ? 'Play again — same room'
-                              : 'Request rematch',
+                              ? tr('Play again — same room')
+                              : tr('Request rematch'),
                         ),
                       ),
                       if (!spectateHost && spectateVotes > 0 && !rematchWaiting)
                         Text(
-                          '$spectateVotes want a rematch',
+                          trn('{n} want a rematch', spectateVotes),
                           style: const TextStyle(color: teal, fontSize: 12),
                         ),
                       TextButton(
                         onPressed: UiSounds.wrap(busy ? null : home),
-                        child: const Text('Exit to menu'),
+                        child: Text(tr('Exit to menu')),
                       ),
                     ] else ...[
                       SizedBox.square(
@@ -986,11 +1043,13 @@ class HomeOverlay extends StatelessWidget {
                       ),
                       const SizedBox(height: 16),
                       Text(
-                        mode == PlayMode.paused
-                            ? 'Resume'
-                            : isHome
-                            ? 'Start'
-                            : 'Play again',
+                        tr(
+                          mode == PlayMode.paused
+                              ? 'Resume'
+                              : isHome
+                              ? 'Start'
+                              : 'Play again',
+                        ),
                         style: const TextStyle(
                           fontSize: 25,
                           color: ink,
@@ -999,10 +1058,24 @@ class HomeOverlay extends StatelessWidget {
                       ),
                       if (isHome) ...[
                         Text(
-                          modeNames[settings.choice.index],
+                          tr(modeNames[settings.choice.index]),
                           style: const TextStyle(color: teal),
                         ),
-                        const SizedBox(height: 28),
+                        const SizedBox(height: 8),
+                        OutlinedButton.icon(
+                          onPressed: UiSounds.wrap(busy ? null : modes),
+                          style: OutlinedButton.styleFrom(
+                            minimumSize: const Size(230, 48),
+                            backgroundColor: Colors.white.withValues(alpha: .7),
+                          ),
+                          icon: const CartoonIcon(
+                            Icons.tune_rounded,
+                            size: 26,
+                            color: teal,
+                          ),
+                          label: Text(tr('Modes')),
+                        ),
+                        const SizedBox(height: 20),
                         OutlinedButton.icon(
                           onPressed: UiSounds.wrap(busy ? null : room),
                           style: OutlinedButton.styleFrom(
@@ -1010,7 +1083,7 @@ class HomeOverlay extends StatelessWidget {
                             backgroundColor: Colors.white.withValues(alpha: .7),
                           ),
                           icon: const CartoonSprite(CartoonArt.room, size: 42),
-                          label: const Text('Create a room & invite'),
+                          label: Text(tr('Create a room & invite')),
                         ),
                       ],
                     ],
@@ -1040,11 +1113,15 @@ class HomeOverlay extends StatelessWidget {
                           size: 14,
                           color: Color(0xff6b5a4e),
                         ),
-                        Text(
-                          ' $rockAmmo   ·   ${settings.name}',
-                          style: const TextStyle(
-                            color: ink,
-                            fontWeight: FontWeight.w600,
+                        Flexible(
+                          child: Text(
+                            ' $rockAmmo   ·   ${settings.name}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              color: ink,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
                       ],
@@ -1057,7 +1134,7 @@ class HomeOverlay extends StatelessWidget {
                         if (inRace)
                           ActionOrb(
                             Icons.circle,
-                            'Throw rocks',
+                            tr('Throw rocks'),
                             busy || searching ? null : throwRock,
                             badge: '$rockAmmo',
                             color: const Color(0xff6b5a4e),
@@ -1065,18 +1142,18 @@ class HomeOverlay extends StatelessWidget {
                         else
                           ActionOrb(
                             Icons.shopping_bag_rounded,
-                            'Shop',
+                            tr('Shop'),
                             busy || searching ? null : shop,
                           ),
                         ActionOrb(
                           Icons.people_alt_rounded,
-                          'Friends & invitations',
+                          tr('Friends & invitations'),
                           busy || searching ? null : friends,
                         ),
                         if (showRewards)
                           ActionOrb(
                             Icons.ondemand_video_rounded,
-                            'Watch ad for 100 coins',
+                            tr('Watch ad for 100 coins'),
                             busy || searching ? null : reward,
                           ),
                         ActionOrb(
@@ -1084,8 +1161,8 @@ class HomeOverlay extends StatelessWidget {
                               ? Icons.verified_user_rounded
                               : Icons.account_circle_rounded,
                           isGoogle
-                              ? 'Google account (signed in)'
-                              : 'Sign in with Google',
+                              ? tr('Google account (signed in)')
+                              : tr('Sign in with Google'),
                           busy || searching || googleBusy ? null : google,
                           badge: isGoogle ? '✓' : null,
                           color: isGoogle ? teal : null,
@@ -1096,9 +1173,11 @@ class HomeOverlay extends StatelessWidget {
                     Padding(
                       padding: const EdgeInsets.only(top: 8),
                       child: Text(
-                        settings.control == ControlMode.joystick
-                            ? 'Hold to hop · Drag to steer'
-                            : 'Swipe up to jump · Diagonal to steer',
+                        tr(
+                          settings.control == ControlMode.joystick
+                              ? 'Hold to hop · Drag to steer'
+                              : 'Swipe up to jump · Diagonal to steer',
+                        ),
                         style: const TextStyle(color: teal, fontSize: 12),
                       ),
                     ),
@@ -1107,6 +1186,135 @@ class HomeOverlay extends StatelessWidget {
             ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+/// Home-screen "Modes" popup: pick the game mode without digging through
+/// settings. Edits apply to the live [PlayerSettings] instance so the home
+/// screen label updates behind the sheet; [onChanged] lets the caller resync
+/// its own mode mirror (run choice) and repaint.
+class ModePickerSheet extends StatefulWidget {
+  final PlayerSettings settings;
+  final VoidCallback onChanged;
+  const ModePickerSheet({
+    super.key,
+    required this.settings,
+    required this.onChanged,
+  });
+  @override
+  State<ModePickerSheet> createState() => _ModePickerSheetState();
+}
+
+class _ModePickerSheetState extends State<ModePickerSheet> {
+  bool saving = false;
+
+  Future<void> _apply() async {
+    if (saving) return;
+    setState(() => saving = true);
+    try {
+      await widget.settings.save();
+    } catch (_) {
+      // Keep the choice in memory even if the local write fails, matching the
+      // settings sheet: the mode still applies to this session.
+    }
+    if (!mounted) return;
+    setState(() => saving = false);
+    widget.onChanged();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final s = widget.settings;
+    return Padding(
+      padding: EdgeInsets.fromLTRB(
+        24,
+        20,
+        24,
+        MediaQuery.viewInsetsOf(context).bottom +
+            MediaQuery.viewPaddingOf(context).bottom +
+            24,
+      ),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            tr('Game mode'),
+            style: const TextStyle(
+              fontSize: 27,
+              fontWeight: FontWeight.w800,
+              color: ink,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            tr('Choose the mode you want to play'),
+            style: const TextStyle(color: teal, fontSize: 14),
+          ),
+          const SizedBox(height: 12),
+          Flexible(
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                ...GameChoice.values.map(
+                  (choice) => ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: CartoonSprite(
+                      choice == GameChoice.race
+                          ? CartoonArt.challenge
+                          : CartoonArt.classic,
+                    ),
+                    trailing: CartoonIcon(
+                      s.choice == choice
+                          ? Icons.radio_button_checked
+                          : Icons.radio_button_off,
+                      color: teal,
+                    ),
+                    title: Text(tr(modeNames[choice.index])),
+                    subtitle: Text(tr(modeDescriptions[choice.index])),
+                    onTap: saving
+                        ? null
+                        : UiSounds.wrap(() {
+                            s.choice = choice;
+                            unawaited(_apply());
+                          }),
+                  ),
+                ),
+                if (s.choice == GameChoice.race)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: DropdownButtonFormField<int>(
+                      initialValue: s.raceTarget,
+                      decoration: InputDecoration(
+                        labelText: tr('Race finish line'),
+                      ),
+                      items: List.generate(
+                        10,
+                        (i) => DropdownMenuItem(
+                          value: (i + 1) * 100,
+                          child: Text('${(i + 1) * 100} steps'),
+                        ),
+                      ),
+                      onChanged: saving
+                          ? null
+                          : (v) {
+                              s.raceTarget = v!;
+                              unawaited(_apply());
+                            },
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          FilledButton.icon(
+            onPressed: UiSounds.wrap(() => Navigator.pop(context)),
+            style: FilledButton.styleFrom(minimumSize: const Size(230, 56)),
+            icon: const Icon(Icons.check_rounded, color: Colors.white),
+            label: Text(saving ? tr('Saving…') : tr('Done')),
+          ),
+        ],
       ),
     );
   }
@@ -1156,9 +1364,9 @@ class _SettingsSheetState extends State<SettingsSheet> {
             child: ListView(
               shrinkWrap: true,
               children: [
-                const Text(
-                  'Make it yours',
-                  style: TextStyle(
+                Text(
+                  tr('Make it yours'),
+                  style: const TextStyle(
                     fontSize: 27,
                     fontWeight: FontWeight.w800,
                     color: ink,
@@ -1168,23 +1376,38 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 TextField(
                   controller: name,
                   maxLength: 16,
-                  decoration: const InputDecoration(
-                    labelText: 'Player name',
-                    border: OutlineInputBorder(),
+                  decoration: InputDecoration(
+                    labelText: tr('Player name'),
+                    border: const OutlineInputBorder(),
                   ),
+                ),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  initialValue: appLang.value,
+                  decoration: InputDecoration(
+                    labelText: tr('Language'),
+                  ),
+                  items: const [
+                    DropdownMenuItem(value: 'en', child: Text('English')),
+                    DropdownMenuItem(value: 'ar', child: Text('العربية')),
+                  ],
+                  onChanged: (v) => setState(() {
+                    appLang.value = v!;
+                    s.language = v;
+                  }),
                 ),
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
-                  title: const Text('Nature ambience & sound effects'),
+                    title: Text(tr('Nature ambience & sound effects')),
                   secondary: CartoonSprite(
                     s.sound ? CartoonArt.sound : CartoonArt.soundOff,
                   ),
                   value: s.sound,
                   onChanged: (v) => setState(() => s.sound = v),
                 ),
-                const Text(
-                  'Game mode',
-                  style: TextStyle(fontWeight: FontWeight.bold),
+                Text(
+                  tr('Game mode'),
+                  style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
                 ...GameChoice.values.map(
                   (choice) => ListTile(
@@ -1200,14 +1423,8 @@ class _SettingsSheetState extends State<SettingsSheet> {
                           : Icons.radio_button_off,
                       color: teal,
                     ),
-                    title: Text(modeNames[choice.index]),
-                    subtitle: Text(
-                      [
-                        'Climb at your own pace',
-                        'Last player standing · three attempts each',
-                        'First to the finish · three attempts each',
-                      ][choice.index],
-                    ),
+                    title: Text(tr(modeNames[choice.index])),
+                    subtitle: Text(tr(modeDescriptions[choice.index])),
                     onTap: UiSounds.wrap(
                       () => setState(() => s.choice = choice),
                     ),
@@ -1216,8 +1433,8 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 if (s.choice == GameChoice.race)
                   DropdownButtonFormField<int>(
                     initialValue: s.raceTarget,
-                    decoration: const InputDecoration(
-                      labelText: 'Race finish line',
+                    decoration: InputDecoration(
+                      labelText: tr('Race finish line'),
                     ),
                     items: List.generate(
                       10,
@@ -1229,27 +1446,37 @@ class _SettingsSheetState extends State<SettingsSheet> {
                     onChanged: (v) => setState(() => s.raceTarget = v!),
                   ),
                 const SizedBox(height: 16),
-                const Text(
-                  'Playing character',
-                  style: TextStyle(fontWeight: FontWeight.bold),
+                Text(
+                  tr('Playing character'),
+                  style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
                 Center(
                   child: CharacterPortrait(character: s.character, size: 96),
                 ),
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(value: 'male', label: Text('Male')),
-                    ButtonSegment(value: 'female', label: Text('Female')),
+                Wrap(
+                  alignment: WrapAlignment.center,
+                  spacing: 6,
+                  runSpacing: 4,
+                  children: [
+                    for (final entry in const [
+                      ('male', 'Male'),
+                      ('female', 'Female'),
+                      ('male_round', 'Round male'),
+                      ('female_round', 'Round female'),
+                    ])
+                      ChoiceChip(
+                        label: Text(tr(entry.$2)),
+                        selected: s.character == entry.$1,
+                        onSelected: UiSounds.change(
+                          (_) => setState(() => s.character = entry.$1),
+                        ),
+                      ),
                   ],
-                  selected: {s.character},
-                  onSelectionChanged: UiSounds.change(
-                    (v) => setState(() => s.character = v.first),
-                  ),
                 ),
                 const SizedBox(height: 8),
-                const Text(
-                  'Controls',
-                  style: TextStyle(fontWeight: FontWeight.bold),
+                Text(
+                  tr('Controls'),
+                  style: const TextStyle(fontWeight: FontWeight.bold),
                 ),
                 ...ControlMode.values.map(
                   (mode) => ListTile(
@@ -1266,12 +1493,14 @@ class _SettingsSheetState extends State<SettingsSheet> {
                       color: teal,
                     ),
                     title: Text(
-                      mode == ControlMode.swipe ? 'Swipe' : 'Joystick',
+                      tr(mode == ControlMode.swipe ? 'Swipe' : 'Joystick'),
                     ),
                     subtitle: Text(
-                      mode == ControlMode.swipe
-                          ? 'Flick to move and jump'
-                          : 'Hold to hop continuously, drag to steer',
+                      tr(
+                        mode == ControlMode.swipe
+                            ? 'Flick to move and jump'
+                            : 'Hold to hop continuously, drag to steer',
+                      ),
                     ),
                     onTap: UiSounds.wrap(
                       () => setState(() => s.control = mode),
@@ -1281,8 +1510,8 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 const SizedBox(height: 12),
                 DropdownButtonFormField<String>(
                   initialValue: s.country,
-                  decoration: const InputDecoration(
-                    labelText: 'Country for practice rivals',
+                  decoration: InputDecoration(
+                    labelText: tr('Country for practice rivals'),
                   ),
                   items: regions.keys
                       .map((k) => DropdownMenuItem(value: k, child: Text(k)))
@@ -1295,7 +1524,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 DropdownButtonFormField<String>(
                   key: ValueKey(s.country),
                   initialValue: s.city,
-                  decoration: const InputDecoration(labelText: 'City'),
+                  decoration: InputDecoration(labelText: tr('City')),
                   items: regions[s.country]!.keys
                       .map((k) => DropdownMenuItem(value: k, child: Text(k)))
                       .toList(),
@@ -1305,10 +1534,10 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 if (widget.playerId != null)
                   ListTile(
                     contentPadding: EdgeInsets.zero,
-                    title: const Text('Your player ID'),
+                    title: Text(tr('Your player ID')),
                     subtitle: SelectableText(widget.playerId!),
                     trailing: IconButton(
-                      tooltip: 'Copy player ID',
+                      tooltip: tr('Copy player ID'),
                       icon: const CartoonIcon(Icons.copy),
                       onPressed: UiSounds.wrap(
                         () => Clipboard.setData(
@@ -1328,7 +1557,7 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 () => Clipboard.setData(ClipboardData(text: details!)),
               ),
               icon: const Icon(Icons.copy, size: 16),
-              label: const Text('Copy connection details'),
+                              label: Text(tr('Copy connection details')),
             ),
           const SizedBox(height: 12),
           FilledButton(
@@ -1350,8 +1579,9 @@ class _SettingsSheetState extends State<SettingsSheet> {
                       } catch (e) {
                         if (mounted)
                           setState(() {
-                            error =
-                                'Could not save on this device. Please retry.';
+                            error = tr(
+                              'Could not save on this device. Please retry.',
+                            );
                             saving = false;
                           });
                         return;
@@ -1363,10 +1593,12 @@ class _SettingsSheetState extends State<SettingsSheet> {
                         if (mounted)
                           setState(() {
                             error =
-                                'Saved on this device. ' +
+                                tr('Saved on this device. ') +
                                 (e is OnlineServiceFailure
                                     ? e.message
-                                    : 'Online profile sync is pending.');
+                                    : tr(
+                                        'Online profile sync is pending.',
+                                      ));
                             details = e.toString();
                             saving = false;
                           });
@@ -1378,10 +1610,10 @@ class _SettingsSheetState extends State<SettingsSheet> {
             ),
             child: Text(
               saving
-                  ? 'Saving…'
+                  ? tr('Saving…')
                   : error != null
-                  ? 'Retry online sync'
-                  : 'Save settings',
+                  ? tr('Retry online sync')
+                  : tr('Save settings'),
             ),
           ),
         ],

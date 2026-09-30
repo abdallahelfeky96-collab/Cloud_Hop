@@ -61,24 +61,37 @@ class Progress {
 
 class Product {
   final String id, name, category, description;
+  final String arName, arDesc;
   final int price;
   const Product(
     this.id,
     this.name,
     this.category,
     this.price,
-    this.description,
-  );
+    this.description, {
+    this.arName = '',
+    this.arDesc = '',
+  });
 }
 
 const products = [
-  Product('rocket', 'Rocket', 'items', 500, 'Fly upward for 1.6 seconds.'),
+  Product(
+    'rocket',
+    'Rocket',
+    'items',
+    500,
+    'Fly upward for 1.6 seconds.',
+    arName: 'صاروخ',
+    arDesc: 'طيران للأعلى لمدة ١٫٦ ثانية.',
+  ),
   Product(
     'life',
     'Extra life',
     'items',
     1000,
     'Classic: one rescue per life. Use your full bag in one run.',
+    arName: 'حياة إضافية',
+    arDesc: 'إنقاذ تلقائي. استخدم كل ما في حقيبتك في الجولة.',
   ),
   Product(
     'spring',
@@ -86,6 +99,8 @@ const products = [
     'items',
     100,
     'Spring line three steps ahead.',
+    arName: 'ترامبولين',
+    arDesc: 'خط زنبركي بعد ثلاث درجات.',
   ),
   Product(
     'rock',
@@ -93,21 +108,81 @@ const products = [
     'items',
     500,
     'One spectator rock shower (5-10 boulders). Stock up before the round.',
+    arName: 'صخور',
+    arDesc: 'رشقة صخور واحدة للمتفرج (٥-١٠ صخور). خزّن قبل الجولة.',
   ),
-  Product('pip', 'Original Pip', 'skins', 0, 'The original explorer.'),
-  Product('mint', 'Froggy Pip', 'skins', 100, 'A bright green frog hat.'),
-  Product('cosmo', 'Cosmo Pip', 'skins', 140, 'A little space explorer.'),
-  Product('berry', 'Berry Pip', 'skins', 120, 'Pink with a golden bow.'),
-  Product('auto', 'Level skies', 'skies', 0, 'A new style every 50 steps.'),
-  Product('sunset', 'Peach sunset', 'skies', 100, 'Warm evening colors.'),
+  Product(
+    'pip',
+    'Original Pip',
+    'skins',
+    0,
+    'The original explorer.',
+    arName: 'بيب الأصلي',
+    arDesc: 'المستكشف الأصلي.',
+  ),
+  Product(
+    'mint',
+    'Froggy Pip',
+    'skins',
+    100,
+    'A bright green frog hat.',
+    arName: 'بيب الضفدع',
+    arDesc: 'قبعة ضفدع خضراء زاهية.',
+  ),
+  Product(
+    'cosmo',
+    'Cosmo Pip',
+    'skins',
+    140,
+    'A little space explorer.',
+    arName: 'بيب الفضاء',
+    arDesc: 'مستكشف فضاء صغير.',
+  ),
+  Product(
+    'berry',
+    'Berry Pip',
+    'skins',
+    120,
+    'Pink with a golden bow.',
+    arName: 'بيب التوت',
+    arDesc: 'وردي مع فيونكة ذهبية.',
+  ),
+  Product(
+    'auto',
+    'Level skies',
+    'skies',
+    0,
+    'A new style every 50 steps.',
+    arName: 'سماوات المراحل',
+    arDesc: 'شكل جديد كل ٥٠ درجة.',
+  ),
+  Product(
+    'sunset',
+    'Peach sunset',
+    'skies',
+    100,
+    'Warm evening colors.',
+    arName: 'غروب خوخي',
+    arDesc: 'ألوان المساء الدافئة.',
+  ),
   Product(
     'aurora',
     'Dream aurora',
     'skies',
     150,
     'Soft ribbons of northern light.',
+    arName: 'شفق الحلم',
+    arDesc: 'شرائط ناعمة من الشفق القطبي.',
   ),
-  Product('candy', 'Candy sky', 'skies', 100, 'Clouds in pink and lavender.'),
+  Product(
+    'candy',
+    'Candy sky',
+    'skies',
+    100,
+    'Clouds in pink and lavender.',
+    arName: 'سماء الحلوى',
+    arDesc: 'غيوم بالوردي واللافندر.',
+  ),
 ];
 bool purchase(Progress p, Product item) {
   final owned = item.category == 'skins'
