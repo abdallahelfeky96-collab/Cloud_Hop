@@ -231,22 +231,20 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                         ),
                       ),
                       const SizedBox(height: 12),
+                      // Mini avatars from assets/ui/characters.png so the
+                      // preview matches the in-game sprite.
                       Wrap(
                         alignment: WrapAlignment.center,
-                        spacing: 6,
-                        runSpacing: 4,
+                        spacing: 8,
+                        runSpacing: 6,
                         children: [
-                          for (final entry in const [
-                            ('male', 'Male'),
-                            ('female', 'Female'),
-                            ('male_round', 'Round male'),
-                            ('female_round', 'Round female'),
-                          ])
-                            ChoiceChip(
-                              label: Text(tr(entry.$2)),
-                              selected: s.character == entry.$1,
-                              onSelected: (_) =>
-                                  setState(() => s.character = entry.$1),
+                          for (final entry in CharacterArt.all)
+                            _OnboardingCharacterChip(
+                              character: entry.id,
+                              label: tr(entry.label),
+                              selected: s.character == entry.id,
+                              onTap: () =>
+                                  setState(() => s.character = entry.id),
                             ),
                         ],
                       ),
@@ -287,6 +285,53 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                       label: Text(tr('Start game')),
                     ),
                 ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// Selectable character chip for onboarding: mini avatar plus label.
+class _OnboardingCharacterChip extends StatelessWidget {
+  final String character, label;
+  final bool selected;
+  final VoidCallback onTap;
+  const _OnboardingCharacterChip({
+    required this.character,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(20),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(6, 5, 12, 5),
+        decoration: BoxDecoration(
+          color: selected ? const Color(0xfffff4dc) : Colors.white,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: selected ? teal : const Color(0xffcfddd6),
+            width: selected ? 2.5 : 1,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CharacterMini(character: character, size: 32),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(
+                color: ink,
+                fontSize: 13,
+                fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
               ),
             ),
           ],

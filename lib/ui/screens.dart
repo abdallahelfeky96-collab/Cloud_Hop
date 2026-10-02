@@ -613,6 +613,150 @@ class ResultFaceoff extends StatelessWidget {
   }
 }
 
+/// Multiplayer results ranking. Shown instead of the 1v1 face-off when a room
+/// has more than two players, so every racer appears ranked by finishing
+/// position and score. The winner keeps the gold highlight; the local player
+/// is outlined in teal.
+class MultiplayerLeaderboard extends StatelessWidget {
+  final List<
+    ({
+      String name,
+      int score,
+      bool isSelf,
+      bool isWinner,
+      String character,
+    })
+  >
+  standings;
+  final String userName;
+  final String? userPhoto;
+  const MultiplayerLeaderboard({
+    super.key,
+    required this.standings,
+    required this.userName,
+    this.userPhoto,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 400),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          for (var i = 0; i < standings.length; i++)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 6),
+              child: _LeaderboardRow(
+                rank: i + 1,
+                name: standings[i].name,
+                score: standings[i].score,
+                isSelf: standings[i].isSelf,
+                isWinner: standings[i].isWinner,
+                character: standings[i].character,
+                photo: standings[i].isSelf ? userPhoto : null,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LeaderboardRow extends StatelessWidget {
+  final int rank, score;
+  final String name, character;
+  final bool isSelf, isWinner;
+  final String? photo;
+  const _LeaderboardRow({
+    required this.rank,
+    required this.name,
+    required this.score,
+    required this.isSelf,
+    required this.isWinner,
+    required this.character,
+    this.photo,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final medal = isWinner ? const Color(0xffc98a1b) : const Color(0xffcfddd6);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      decoration: BoxDecoration(
+        color: isWinner ? const Color(0xfffff6dd) : Colors.white.withValues(alpha: .92),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: isSelf ? teal : medal,
+          width: isSelf ? 2.5 : 1.5,
+        ),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 30,
+            child: Text(
+              '$rank',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                color: isWinner ? const Color(0xffc98a1b) : ink,
+                fontSize: 18,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          // Mini character avatar from assets/ui/characters.png, ringed for
+          // the winner and the local player. A Google photo still wins when
+          // the racer set one.
+          photo == null
+              ? CharacterMini(
+                  character: character,
+                  size: 32,
+                  border: isSelf ? teal : (isWinner ? medal : null),
+                )
+              : CircleAvatar(
+                  radius: 15,
+                  backgroundColor: Colors.white,
+                  backgroundImage: NetworkImage(photo!),
+                  onBackgroundImageError: (_, _) {},
+                ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              isSelf ? tr('You') : name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                color: ink,
+                fontSize: 15,
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          if (isWinner)
+            const Padding(
+              padding: EdgeInsets.only(right: 6),
+              child: CartoonIcon(
+                Icons.emoji_events_rounded,
+                color: Color(0xffc98a1b),
+                size: 20,
+              ),
+            ),
+          Text(
+            '$score',
+            style: const TextStyle(
+              color: teal,
+              fontSize: 17,
+              fontWeight: FontWeight.w900,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 class HomeOverlay extends StatelessWidget {
   final PlayMode mode;
   final PlayerSettings settings;
@@ -622,6 +766,18 @@ class HomeOverlay extends StatelessWidget {
   final String result;
   final String? photoUrl, accountName, oppName;
   final int? oppScore;
+  /// Every racer ranked for multiplayer results. Empty (or exactly two
+  /// entries) keeps the 1v1 face-off.
+  final List<
+    ({
+      String name,
+      int score,
+      bool isSelf,
+      bool isWinner,
+      String character,
+    })
+  >
+  standings;
   final int? outcome;
   final bool authBusy, isGoogle, googleBusy;
   final int? reviveSeconds;
@@ -656,6 +812,7 @@ class HomeOverlay extends StatelessWidget {
     this.accountName,
     this.oppName,
     this.oppScore,
+    this.standings = const [],
     this.outcome,
     this.authBusy = false,
     this.isGoogle = false,
@@ -781,7 +938,16 @@ class HomeOverlay extends StatelessWidget {
                               ),
                               child: Column(
                                 children: [
-                                  if (oppName != null && oppScore != null)
+                                  // Multiplayer rooms rank every racer instead
+                                  // of showing the 1v1 face-off. 1v1 keeps the
+                                  // existing two-avatar layout untouched.
+                                  if (standings.length > 2)
+                                    MultiplayerLeaderboard(
+                                      standings: standings,
+                                      userName: settings.name,
+                                      userPhoto: photoUrl,
+                                    )
+                                  else if (oppName != null && oppScore != null)
                                     FittedBox(
                                       fit: BoxFit.scaleDown,
                                       child: ResultFaceoff(
@@ -1320,6 +1486,59 @@ class _ModePickerSheetState extends State<ModePickerSheet> {
   }
 }
 
+/// Selectable character chip: the mini avatar plus its label, highlighted
+/// when it is the current pick.
+class _CharacterChip extends StatelessWidget {
+  final String character, label;
+  final bool selected;
+  final VoidCallback onTap;
+  const _CharacterChip({
+    required this.character,
+    required this.label,
+    required this.selected,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label,
+      child: InkWell(
+        onTap: UiSounds.wrap(onTap),
+        borderRadius: BorderRadius.circular(20),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(6, 5, 12, 5),
+          decoration: BoxDecoration(
+            color: selected ? const Color(0xfffff4dc) : Colors.white,
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: selected ? teal : const Color(0xffcfddd6),
+              width: selected ? 2.5 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CharacterMini(character: character, size: 30),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  color: ink,
+                  fontSize: 13,
+                  fontWeight: selected ? FontWeight.w800 : FontWeight.w600,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class SettingsSheet extends StatefulWidget {
   final PlayerSettings settings;
   final String? playerId;
@@ -1453,23 +1672,19 @@ class _SettingsSheetState extends State<SettingsSheet> {
                 Center(
                   child: CharacterPortrait(character: s.character, size: 96),
                 ),
+                // Mini avatars from assets/ui/characters.png, so the preview
+                // matches the sprite the player will actually race as.
                 Wrap(
                   alignment: WrapAlignment.center,
-                  spacing: 6,
-                  runSpacing: 4,
+                  spacing: 8,
+                  runSpacing: 6,
                   children: [
-                    for (final entry in const [
-                      ('male', 'Male'),
-                      ('female', 'Female'),
-                      ('male_round', 'Round male'),
-                      ('female_round', 'Round female'),
-                    ])
-                      ChoiceChip(
-                        label: Text(tr(entry.$2)),
-                        selected: s.character == entry.$1,
-                        onSelected: UiSounds.change(
-                          (_) => setState(() => s.character = entry.$1),
-                        ),
+                    for (final entry in CharacterArt.all)
+                      _CharacterChip(
+                        character: entry.id,
+                        label: tr(entry.label),
+                        selected: s.character == entry.id,
+                        onTap: () => setState(() => s.character = entry.id),
                       ),
                   ],
                 ),

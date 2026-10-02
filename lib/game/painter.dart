@@ -7,6 +7,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
+import 'character.dart';
 import 'engine.dart';
 
 const skyThemes = [
@@ -179,8 +180,8 @@ class GamePainter extends CustomPainter {
         );
       }
 
-      final female = character.startsWith('female');
-      final rounded = character.endsWith('_round');
+      final female = Character.isFemale(character);
+      final rounded = Character.isRound(character);
       final shoe = female ? const Color(0xffed84ae) : const Color(0xfffffff4);
       limb(
         const Offset(-7, 6),

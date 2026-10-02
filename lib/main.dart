@@ -21,6 +21,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'config.dart';
+import 'game/character.dart';
 import 'game/engine.dart';
 import 'game/match_result.dart';
 import 'game/painter.dart';
@@ -207,7 +208,6 @@ class _PlayScreenState extends State<PlayScreen>
   StreamSubscription? _pushLinksSub, _pushMsgsSub, _invitesSub, _friendsSub;
   final _seenPushKeys = <String>{};
   bool _overlayOpen = false, _invitesAttached = false;
-  String? _voicePreconnectedFor;
   int _voiceRetryAtMs = 0;
   final peerPositions = <String, Offset>{};
   Progress get progress => widget.progress;
@@ -647,6 +647,16 @@ class _PlayScreenState extends State<PlayScreen>
       }
       accumulator -= 1 / 120;
     }
+    // Crossing the line is the most time-critical event in a Race room: send
+    // it right away instead of waiting for the 200ms heartbeat, then claim the
+    // round immediately so the winner is decided in one round-trip.
+    if (race.active &&
+        raceStarted &&
+        !race.arcade &&
+        !race.finishSent &&
+        game.highest >= race.target) {
+      unawaited(race.send(game).then((_) => _maybeSettleRound(force: true)));
+    }
     if (mounted) setState(() {});
   }
 
@@ -656,10 +666,7 @@ class _PlayScreenState extends State<PlayScreen>
   }
 
   void checkRace() {
-    if (!race.active) {
-      _voicePreconnectedFor = null;
-      return;
-    }
+    if (!race.active) return;
     // Shared room pre-connect; mute/unmute avoids reconnecting the room.
     preconnectVoice();
     if (race.error != null && race.room.isEmpty) {
@@ -710,11 +717,17 @@ class _PlayScreenState extends State<PlayScreen>
       else if (!endAd && audioFeedbackRound != audioRound)
         unawaited(finishRun());
     }
+    // Freeze the local simulation the moment the line is crossed, by anyone.
+    // Waiting only for our own crossing would let the other racers keep
+    // scoring past the winner during the settle round-trip.
     if (raceStarted &&
         !race.arcade &&
-        game.highest >= race.target &&
+        race.anyAtTarget &&
+        game.mode == PlayMode.playing &&
         !game.awaitingFinish) {
-      game.say('FINISH! Waiting for the result…');
+      final selfId = race.uidOrNull;
+      final mine = selfId != null && game.highest >= race.target;
+      game.say(mine ? 'FINISH! Waiting for the result…' : 'FINISH LINE REACHED!');
       game.awaitingFinish = true;
       game.stopInput();
     }
@@ -732,12 +745,11 @@ class _PlayScreenState extends State<PlayScreen>
       clearJoystick();
       game.stopInput();
       swipeInput.end();
-      if (state == AppLifecycleState.paused ||
-          state == AppLifecycleState.detached ||
-          state == AppLifecycleState.hidden) {
-        unawaited(voice.leave());
-        _voicePreconnectedFor = null;
-      }
+      // Voice stays connected for the whole room. Backgrounding the app must
+      // not tear the channel down: the session keeps running so a phone call
+      // or the recents screen never interrupts the conversation, and only
+      // leaving the room (or the process dying) ends it.
+      if (state == AppLifecycleState.detached) unawaited(voice.leave());
       if (!race.active && game.mode == PlayMode.playing) {
         game.mode = PlayMode.paused;
       }
@@ -869,7 +881,10 @@ class _PlayScreenState extends State<PlayScreen>
           runChoice == GameChoice.race)
         result = trn('{n} wins!', rival!.name);
     }
-    await voice.leave();
+    // Voice stays joined for the whole room lifecycle: leaving here would
+    // drop the channel on the results screen and force a fresh handshake on
+    // every rematch. The room-teardown paths (goHome, race error, dispose)
+    // own the voice leave instead.
     adsBusy = true;
     syncAudio();
     await widget.store.save(progress);
@@ -1010,8 +1025,14 @@ class _PlayScreenState extends State<PlayScreen>
     final id =
         '${DateTime.now().microsecondsSinceEpoch}-${math.Random.secure().nextInt(0x7fffffff)}';
     searchId = id;
-    final deadline = DateTime.now().add(const Duration(seconds: 12));
-    searchTimer = Timer(const Duration(seconds: 12), () {
+    // Global queue search: the RTDB matchQueue holds every online player
+    // worldwide (no LAN or subnet filtering), so a real human can be found
+    // from any network. Only when the window expires do we fall back to a bot.
+    final window = const Duration(
+      milliseconds: SocialService.matchWindowMs,
+    );
+    final deadline = DateTime.now().add(window);
+    searchTimer = Timer(window, () {
       if (generation != searchGeneration || !mounted || !searching) return;
       unawaited(cancelSearch());
       startBot();
@@ -1040,6 +1061,10 @@ class _PlayScreenState extends State<PlayScreen>
           participants: {myUid: settings.name, opp['id']!: opp['name']!},
           mode: mode,
           target: settings.raceTarget,
+          characters: {
+            myUid: settings.character,
+            opp['id']!: Character.normalize(opp['character']),
+          },
           skin: progress.skin,
           character: settings.character,
         );
@@ -1079,6 +1104,7 @@ class _PlayScreenState extends State<PlayScreen>
           mode: settings.choice == GameChoice.arcade ? 'arcade' : 'race',
           target: settings.raceTarget,
           name: settings.name,
+          character: settings.character,
         );
         await tryCreate();
       }
@@ -1135,7 +1161,7 @@ class _PlayScreenState extends State<PlayScreen>
     } catch (e) {
       if (generation != searchGeneration || !mounted) return;
       searchTimer
-          ?.cancel(); // Preserve the twelve-second fallback without racing its timer.
+          ?.cancel(); // Keep the full search window before falling back to a bot.
       final remaining = deadline.difference(DateTime.now());
       if (remaining > Duration.zero) await Future<void>.delayed(remaining);
       if (generation != searchGeneration || !mounted) return;
@@ -1427,9 +1453,14 @@ class _PlayScreenState extends State<PlayScreen>
   /// Client-side round settlement (replaces the server trigger): mirrors
   /// the finish/survival/all-out rules and writes the result first-writer-
   /// wins. Throttled; losers abort silently on the existing result.
-  void _maybeSettleRound() {
+  ///
+  /// The throttle is bypassed once anyone has crossed the line so the round
+  /// stops immediately instead of up to two seconds later. [force] is used
+  /// by the crossing player itself, which has just published the finish and
+  /// must not wait for a stamp that will not move.
+  void _maybeSettleRound({bool force = false}) {
     final now = race.serverNow;
-    if (now - _lastSettleMs < 2000) return;
+    if (!force && !race.anyAtTarget && now - _lastSettleMs < 2000) return;
     _lastSettleMs = now;
     if (race.effectiveStartAt == 0 || now < race.effectiveStartAt + 3000) {
       return;
@@ -1996,6 +2027,12 @@ class _PlayScreenState extends State<PlayScreen>
                       ...race.peers.map(
                         (p) => ListTile(
                           dense: true,
+                          leading: CharacterMini(
+                            character: Character.normalize(
+                              p['character']?.toString(),
+                            ),
+                            size: 30,
+                          ),
                           title: Text(p['name'].toString()),
                           trailing: Text('Step ${p['step']}'),
                         ),
@@ -2090,6 +2127,37 @@ class _PlayScreenState extends State<PlayScreen>
       oppName = rival!.name;
       oppScore = rival!.step.floor();
     }
+    // Every racer, ranked. The results screen swaps the 1v1 face-off for this
+    // only when the room has more than two players; 1v1 keeps the current UI.
+    final standings = race.active
+        ? (race.peers.toList()
+              ..sort((a, b) {
+                final sa = ((a['step'] as num?) ?? 0).toInt();
+                final sb = ((b['step'] as num?) ?? 0).toInt();
+                if (a['id'] == race.winner) return -1;
+                if (b['id'] == race.winner) return 1;
+                if (sa != sb) return sb.compareTo(sa);
+                return a['id'].toString().compareTo(b['id'].toString());
+              }))
+            .map(
+              (p) => (
+                name: p['name'].toString(),
+                score: ((p['step'] as num?) ?? 0).toInt(),
+                isSelf: p['id'] == selfId,
+                isWinner: p['id'] == race.winner,
+                character: Character.normalize(p['character']?.toString()),
+              ),
+            )
+            .toList()
+        : const <
+            ({
+              String name,
+              int score,
+              bool isSelf,
+              bool isWinner,
+              String character,
+            })
+          >[];
     return PopScope(
       canPop: game.mode == PlayMode.menu && !race.active && !searching,
       onPopInvokedWithResult: (didPop, _) {
@@ -2359,6 +2427,7 @@ class _PlayScreenState extends State<PlayScreen>
                     accountName: accountName,
                     oppName: game.mode == PlayMode.over ? oppName : null,
                     oppScore: game.mode == PlayMode.over ? oppScore : null,
+                    standings: game.mode == PlayMode.over ? standings : const [],
                     outcome: race.active && !race.finished ? 2 : resultOutcome,
                     reviveSeconds: reviveSeconds,
                     isGoogle: widget.store.isGoogle,
@@ -2451,7 +2520,6 @@ class _PlayScreenState extends State<PlayScreen>
         DateTime.now().millisecondsSinceEpoch < _voiceRetryAtMs) {
       return;
     }
-    _voicePreconnectedFor = code;
     unawaited(
       voice
           .join(
@@ -2461,7 +2529,6 @@ class _PlayScreenState extends State<PlayScreen>
           )
           .catchError((Object e) {
             debugPrint('Voice pre-connect: $e');
-            _voicePreconnectedFor = null;
             _voiceRetryAtMs = DateTime.now().millisecondsSinceEpoch + 30000;
           }),
     );

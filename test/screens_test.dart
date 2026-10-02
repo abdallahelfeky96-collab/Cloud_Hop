@@ -397,4 +397,156 @@ void main() {
     // Persisted for the next launch.
     expect(prefs.getInt('choice'), GameChoice.race.index);
   });
+
+  group('multiplayer results', () {
+    Future<void> showResults(
+      WidgetTester tester, {
+      required List<
+        ({
+          String name,
+          int score,
+          bool isSelf,
+          bool isWinner,
+          String character,
+        })
+      >
+      standings,
+      String? oppName,
+      int? oppScore,
+    }) async {
+      SharedPreferences.setMockInitialValues({});
+      final settings = PlayerSettings(await SharedPreferences.getInstance());
+      tester.view.resetPhysicalSize();
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await (FontLoader(
+        'MaterialIcons',
+      )..addFont(rootBundle.load('fonts/MaterialIcons-Regular.otf'))).load();
+      void noop() {}
+      await tester.pumpWidget(
+        MaterialApp(
+          builder: (context, child) => MediaQuery(
+            data: MediaQuery.of(context).copyWith(disableAnimations: true),
+            child: child!,
+          ),
+          theme: ThemeData(
+            useMaterial3: true,
+            colorScheme: ColorScheme.fromSeed(seedColor: teal),
+          ),
+          home: Scaffold(
+            body: HomeOverlay(
+              mode: PlayMode.over,
+              settings: settings,
+              coins: 420,
+              steps: standings
+                  .where((s) => s.isSelf)
+                  .map((s) => s.score)
+                  .firstOrNull ??
+                  0,
+              earned: 38,
+              busy: false,
+              searching: false,
+              result: 'Room race finished',
+              standings: standings,
+              oppName: oppName,
+              oppScore: oppScore,
+              inRace: true,
+              play: noop,
+              home: noop,
+              room: noop,
+              shop: noop,
+              friends: noop,
+              reward: noop,
+              preferences: noop,
+              profile: noop,
+              modes: noop,
+              rematch: noop,
+              cancelSearch: noop,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+    }
+
+    testWidgets('two racers keep the original 1v1 face-off', (tester) async {
+      await showResults(
+        tester,
+        standings: [
+          (name: 'Me', score: 100, isSelf: true, isWinner: true, character: 'male'),
+          (name: 'Rival', score: 88, isSelf: false, isWinner: false, character: 'female'),
+        ],
+        oppName: 'Rival',
+        oppScore: 88,
+      );
+      expect(find.byType(MultiplayerLeaderboard), findsNothing);
+      expect(find.byType(ResultFaceoff), findsOneWidget);
+      expect(find.text('Rival'), findsOneWidget);
+    });
+
+    testWidgets('three or more racers swap the face-off for a leaderboard', (
+      tester,
+    ) async {
+      await showResults(
+        tester,
+        standings: [
+          (name: 'Me', score: 100, isSelf: true, isWinner: true, character: 'male'),
+          (name: 'Pip', score: 91, isSelf: false, isWinner: false, character: 'female'),
+          (name: 'Zoe', score: 74, isSelf: false, isWinner: false, character: 'female_round'),
+        ],
+        oppName: 'Pip',
+        oppScore: 91,
+      );
+      expect(find.byType(ResultFaceoff), findsNothing);
+      final board = find.byType(MultiplayerLeaderboard);
+      expect(board, findsOneWidget);
+      // Every racer is listed, ranked, and the winner keeps the trophy.
+      for (final name in ['Pip', 'Zoe']) {
+        expect(
+          find.descendant(of: board, matching: find.text(name)),
+          findsOneWidget,
+          reason: name,
+        );
+      }
+      expect(
+        find.descendant(of: board, matching: find.text('You')),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: board,
+          matching: find.byWidgetPredicate(
+            (w) =>
+                w is CartoonIcon && w.icon == Icons.emoji_events_rounded,
+          ),
+        ),
+        findsOneWidget,
+      );
+      // Scores are shown in rank order: 100, 91, 74. Single digits are the
+      // rank badges, so only multi-digit values are the scores.
+      final scores = tester
+          .widgetList<Text>(find.descendant(of: board, matching: find.byType(Text)))
+          .map((t) => t.data)
+          .whereType<String>()
+          .where((s) => RegExp(r'^\d{2,}$').hasMatch(s))
+          .toList();
+      expect(scores, ['100', '91', '74']);
+    });
+
+    testWidgets('the rematch control survives the leaderboard', (tester) async {
+      await showResults(
+        tester,
+        standings: [
+          (name: 'Me', score: 100, isSelf: true, isWinner: true, character: 'male'),
+          (name: 'Pip', score: 91, isSelf: false, isWinner: false, character: 'female'),
+          (name: 'Zoe', score: 74, isSelf: false, isWinner: false, character: 'male_round'),
+        ],
+      );
+      expect(find.byType(MultiplayerLeaderboard), findsOneWidget);
+      expect(find.text('Request rematch'), findsOneWidget);
+    });
+  });
 }

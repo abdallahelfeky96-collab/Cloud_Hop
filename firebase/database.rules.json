@@ -136,6 +136,9 @@
         "target": {
           ".validate": "newData.isNumber() && newData.val() >= 100 && newData.val() <= 1000"
         },
+        "character": {
+          ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 32"
+        },
         "createdAt": {
           ".validate": "newData.isNumber()"
         },

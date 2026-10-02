@@ -1,6 +1,7 @@
 import 'package:cloud_hop/ui/cartoon_controls.dart';
 import 'package:cloud_hop/main.dart';
 import 'package:cloud_hop/services/progress_store.dart';
+import 'package:cloud_hop/services/social.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -92,7 +93,7 @@ void main() {
     await tester.pumpWidget(const SizedBox());
     await tester.pump();
   });
-  testWidgets('offline quick challenge starts a labelled bot at five seconds', (
+  testWidgets('offline quick challenge starts a labelled bot after the window', (
     tester,
   ) async {
     tester.view.physicalSize = const Size(390, 844);
@@ -117,10 +118,13 @@ void main() {
     expect(find.text('Finding your challenger…'), findsOneWidget);
     await tester.pump(const Duration(seconds: 4));
     expect(find.text('Finding your challenger…'), findsOneWidget);
-    // The search window is a wall-clock deadline (12s in findMatch), so the
-    // fake test clock cannot expire it. Let real time pass instead.
+    // The search window is a wall-clock deadline (SocialService.matchWindowMs,
+    // 8s in findMatch), so the fake test clock cannot expire it. Let real time
+    // pass instead.
     await tester.runAsync(
-      () => Future<void>.delayed(const Duration(seconds: 12)),
+      () => Future<void>.delayed(
+        Duration(milliseconds: SocialService.matchWindowMs + 600),
+      ),
     );
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 400));

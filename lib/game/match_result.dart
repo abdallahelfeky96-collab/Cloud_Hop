@@ -34,22 +34,27 @@ MatchDecision? evaluateMatch(
   required bool arcade,
 }) {
   if (players.length < 2) return null;
-  final finishers =
-      players
-          .where(
-            (p) =>
-                !arcade &&
-                matchInt(p['step']) >= target &&
-                matchInt(p['finishedAt']) > 0,
-          )
-          .toList()
-        ..sort((a, b) {
-          final t = matchInt(a['finishedAt'])
-              .compareTo(matchInt(b['finishedAt']));
-          return t != 0 ? t : a['id'].toString().compareTo(b['id'].toString());
-        });
-  if (finishers.isNotEmpty)
-    return MatchDecision(finishers.first['id'].toString(), 'finish');
+  // Race mode ends the instant ANY player reaches the target: the round stops
+  // right there, so nobody can keep jumping and overtake the first finisher.
+  // [finishedAt] (a server timestamp) orders the finishers; a player whose
+  // timestamp has not landed yet sorts last, and ties fall back to uid so
+  // every client picks the same winner.
+  if (!arcade) {
+    final finishers =
+        players.where((p) => matchInt(p['step']) >= target).toList()
+          ..sort((a, b) {
+            final ta = matchInt(a['finishedAt']);
+            final tb = matchInt(b['finishedAt']);
+            // Only compare two stamped times; an unstamped node is treated as
+            // "has not claimed the line yet".
+            if (ta > 0 && tb > 0 && ta != tb) return ta.compareTo(tb);
+            if (ta > 0) return -1;
+            if (tb > 0) return 1;
+            return a['id'].toString().compareTo(b['id'].toString());
+          });
+    if (finishers.isNotEmpty)
+      return MatchDecision(finishers.first['id'].toString(), 'finish');
+  }
   if (players.any((p) => p['status'] == 'ready')) return null;
   // The round continues while anyone is still standing. Eliminated players
   // spectate (or are out); their presence must never end the round, so a

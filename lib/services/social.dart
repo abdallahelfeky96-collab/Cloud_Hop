@@ -3,6 +3,7 @@ import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../game/character.dart';
 import '../game/challenge.dart';
 import '../config.dart';
 import 'firebase_errors.dart';
@@ -91,6 +92,11 @@ class SocialService {
   SocialService(this.store);
 
   static const _timeout = Duration(seconds: 8);
+
+  /// Global matchmaking window: a queue node stays claimable for this long,
+  /// and it is also the search deadline before a practice bot takes over.
+  /// Kept in one place so the queue, the scan and the bot fallback agree.
+  static const matchWindowMs = 8000;
 
   DatabaseReference get _db => FirebaseDatabase.instance.ref();
 
@@ -349,6 +355,7 @@ class SocialService {
     required String mode,
     required int target,
     required String name,
+    String character = 'male',
   }) async {
     final uid = _uid();
     final now = DateTime.now().millisecondsSinceEpoch;
@@ -360,8 +367,9 @@ class SocialService {
             'name': name.trim().isEmpty ? 'Pip' : name.trim(),
             'mode': mode == 'arcade' ? 'arcade' : 'race',
             'target': target,
+            'character': Character.normalize(character),
             'createdAt': now,
-            'deadline': now + 12000,
+            'deadline': now + matchWindowMs,
             'status': 'waiting',
           })
           .timeout(_timeout);
@@ -433,8 +441,11 @@ class SocialService {
       if (((other['deadline'] as num?) ?? 0).toInt() <= now) continue;
       if (!_compatible(mine, other)) continue;
       final name = (other['name'] ?? 'Player').toString();
+      // Carry the opponent's chosen character so the room can draw every
+      // racer as themselves.
+      final character = (other['character'] ?? 'male').toString();
       if (best == null || id.compareTo(best['id']!) < 0)
-        best = {'id': id, 'name': name};
+        best = {'id': id, 'name': name, 'character': character};
     }
     return best;
   }
@@ -484,7 +495,7 @@ class SocialService {
             node['status'] != 'matched' ||
             mine == null ||
             ((node['createdAt'] as num?) ?? 0) <
-                ((mine['createdAt'] as num?) ?? 0) - 12000)
+                ((mine['createdAt'] as num?) ?? 0) - matchWindowMs)
           continue;
         final match = _asNode(node['match']);
         final participants = _asNode(match?['participants']);

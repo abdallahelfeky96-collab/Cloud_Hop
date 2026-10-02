@@ -30,8 +30,9 @@ flutter:
   uses-material-design: true
   assets:
     - assets/ui/cartoon_controls.png
-
     - assets/ui/cloud_hop_logo.png
+    # Selection/UI portraits (mini character avatars).
     - assets/ui/characters.png
+    # In-game body sprites drawn by GamePainter.
     - assets/ui/character_bodies.png
     - assets/audio/

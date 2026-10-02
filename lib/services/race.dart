@@ -6,6 +6,7 @@ import 'package:firebase_database/firebase_database.dart';
 
 import 'progress_store.dart';
 import 'firebase_errors.dart';
+import '../game/character.dart';
 import '../game/engine.dart';
 import '../game/match_result.dart';
 
@@ -56,6 +57,12 @@ class RaceService extends ChangeNotifier {
 
   bool get arcade => room['mode'] == 'arcade';
   int get target => (room['target'] as num?)?.toInt() ?? 100;
+  /// True as soon as ANY player has reached the finish line. Race mode stops
+  /// the whole round here, so nobody can keep jumping past the first finisher.
+  bool get anyAtTarget {
+    if (arcade || !active) return false;
+    return peers.any((p) => matchInt(p['step']) >= target);
+  }
   String get winner => (room['result'] as Map?)?['winner'] as String? ?? '';
   String get winnerName =>
       peers
@@ -185,6 +192,8 @@ class RaceService extends ChangeNotifier {
     required Map<String, String> participants,
     required String mode,
     required int target,
+    /// Character per participant uid, so every racer is drawn as themselves.
+    required Map<String, String> characters,
     String skin = 'pip',
     String character = 'male',
   }) async {
@@ -221,7 +230,12 @@ class RaceService extends ChangeNotifier {
                       'y': 623,
                       'step': 0,
                       'skin': entry.key == uid ? skin : 'pip',
-                      'character': entry.key == uid ? character : 'male',
+                      // Each racer keeps their own pick. Previously every
+                      // matchmade opponent was flattened to 'male', which is
+                      // why only one character showed up in a real match.
+                      'character': entry.key == uid
+                          ? Character.normalize(character)
+                          : Character.normalize(characters[entry.key]),
                       'lives': 2,
                       'status': 'ready',
                       'updatedAt': ServerValue.timestamp,
@@ -267,9 +281,12 @@ class RaceService extends ChangeNotifier {
           )
           .toList();
       if (players.any((p) => matchInt(p['round']) != round)) return;
+      // A zero/missing target would make every racer look like a finisher
+      // (step >= 0), so fall back to the same default the UI uses.
+      final rawTarget = matchInt(fresh['target']);
       final decision = evaluateMatch(
         players,
-        target: matchInt(fresh['target']),
+        target: rawTarget > 0 ? rawTarget : 100,
         arcade: fresh['mode'] == 'arcade',
       );
       if (decision == null || round != rematchRound || !active) return;
