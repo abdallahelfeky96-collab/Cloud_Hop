@@ -265,6 +265,8 @@ const _ar = <String, String>{
   'Out of rocks — buy them in the shop before the next round':
       'نفدت الصخور — اشترِ من المتجر قبل الجولة التالية',
   'Throw failed. Rock refunded.': 'فشل الرمي. تم استرداد الصخرة.',
+  'Match found!': 'تم العثور على منافس! ⚔️',
+  'Jump in! Your rival is waiting.': 'ادخل الآن! منافسك بانتظارك.',
   'Challenger found. Starting together…': 'تم العثور على منافس. البدء معاً…',
   'Match failed to start. Playing practice rival.':
       'تعذّر بدء المباراة. اللعب ضد بوت تدريب.',

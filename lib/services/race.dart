@@ -188,6 +188,11 @@ class RaceService extends ChangeNotifier {
 
   /// Creates a matchmade room with all participants present (client-side
   /// matchmaking). The room auto-starts when the host taps Start.
+  ///
+  /// [reservedCode] is the room id the atomic matchmaking transaction already
+  /// committed to both players' pairing records. Supplying it means the room
+  /// id a player was promised is exactly the room they land in; when it is
+  /// null a fresh code is reserved here instead.
   Future<String> createMatchRoom({
     required Map<String, String> participants,
     required String mode,
@@ -196,6 +201,7 @@ class RaceService extends ChangeNotifier {
     required Map<String, String> characters,
     String skin = 'pip',
     String character = 'male',
+    String? reservedCode,
   }) async {
     final uid = uidOrNull;
     if (uid == null || !store.cloud) throw StateError('Sign in first.');
@@ -206,12 +212,20 @@ class RaceService extends ChangeNotifier {
     error = null;
     try {
       String? code;
-      for (var attempt = 0; attempt < 5 && code == null; attempt++) {
-        final candidate = Random.secure()
-            .nextInt(0xffffff)
-            .toRadixString(16)
-            .padLeft(6, '0')
-            .toUpperCase();
+      // A code reserved by matchmaking is claimed with the same
+      // first-writer-wins transaction, so a stale room cannot be hijacked.
+      final seeds = reservedCode == null
+          ? List.generate(
+              5,
+              (_) => Random.secure()
+                  .nextInt(0xffffff)
+                  .toRadixString(16)
+                  .padLeft(6, '0')
+                  .toUpperCase(),
+            )
+          : [reservedCode];
+      for (var attempt = 0; attempt < seeds.length && code == null; attempt++) {
+        final candidate = seeds[attempt];
         final result = await FirebaseDatabase.instance
             .ref('rooms/$candidate')
             .runTransaction((current) {

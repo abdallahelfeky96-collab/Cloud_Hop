@@ -309,6 +309,92 @@ class _OrbitRing extends CustomPainter {
       old.color != color || old.width != width;
 }
 
+/// Bright, thick-bordered cartoon banner confirming a human match. It shows
+/// itself for a moment and then dismisses itself, so the player is already in
+/// the room while it fades. Deliberately not a black snackbar: the game is
+/// cartoon-styled and the confirmation should read as part of it.
+class MatchFoundBanner extends StatefulWidget {
+  const MatchFoundBanner({super.key});
+
+  @override
+  State<MatchFoundBanner> createState() => _MatchFoundBannerState();
+}
+
+class _MatchFoundBannerState extends State<MatchFoundBanner> {
+  @override
+  void initState() {
+    super.initState();
+    // Self-dismissing: the room transition must never wait on this.
+    Future<void>.delayed(const Duration(milliseconds: 1400), () {
+      if (mounted) Navigator.of(context).maybePop();
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      type: MaterialType.transparency,
+      child: Center(
+        child: Container(
+          margin: const EdgeInsets.symmetric(horizontal: 26),
+          padding: const EdgeInsets.fromLTRB(18, 16, 18, 14),
+          decoration: BoxDecoration(
+            color: const Color(0xfffff4b8),
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: const Color(0xff2b2b2b), width: 5),
+            boxShadow: const [
+              BoxShadow(color: Color(0x33000000), blurRadius: 0, offset: Offset(5, 6)),
+            ],
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  const CartoonIcon(
+                    Icons.emoji_events_rounded,
+                    color: Color(0xffc98a1b),
+                    size: 34,
+                  ),
+                  const SizedBox(width: 10),
+                  Flexible(
+                    child: Text(
+                      tr('Match found!'),
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Color(0xff2b2b2b),
+                        fontSize: 21,
+                        fontWeight: FontWeight.w900,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  const CartoonIcon(
+                    Icons.sports_mma_rounded,
+                    color: Color(0xff2b2b2b),
+                    size: 34,
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Text(
+                tr('Jump in! Your rival is waiting.'),
+                textAlign: TextAlign.center,
+                style: const TextStyle(
+                  color: Color(0xff5a5a5a),
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 /// Pre-game face-off: player avatar left, mystery rival right, and two
 /// counter-revolving orbit rings around a playful VS mark while searching.
 class MatchFaceoff extends StatefulWidget {
@@ -1450,24 +1536,13 @@ class _ModePickerSheetState extends State<ModePickerSheet> {
                 if (s.choice == GameChoice.race)
                   Padding(
                     padding: const EdgeInsets.only(top: 8),
-                    child: DropdownButtonFormField<int>(
-                      initialValue: s.raceTarget,
-                      decoration: InputDecoration(
-                        labelText: tr('Race finish line'),
-                      ),
-                      items: List.generate(
-                        10,
-                        (i) => DropdownMenuItem(
-                          value: (i + 1) * 100,
-                          child: Text('${(i + 1) * 100} steps'),
-                        ),
-                      ),
-                      onChanged: saving
-                          ? null
-                          : (v) {
-                              s.raceTarget = v!;
-                              unawaited(_apply());
-                            },
+                    child: CartoonTargetSlider(
+                      value: s.raceTarget,
+                      enabled: !saving,
+                      onChanged: (v) {
+                        s.raceTarget = v;
+                        unawaited(_apply());
+                      },
                     ),
                   ),
               ],
@@ -1482,6 +1557,196 @@ class _ModePickerSheetState extends State<ModePickerSheet> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Cartoon Race target picker: ten notched steps from 100 to 1000, a bright
+/// green active track and a chunky yellow knob. Replaces the plain dropdown
+/// so the finish line matches the rest of the playful UI.
+class CartoonTargetSlider extends StatelessWidget {
+  /// Ten discrete steps: 100, 200, ... 1000.
+  static const int minTarget = 100;
+  static const int maxTarget = 1000;
+  static const int step = 100;
+  static const int stepCount = 10;
+
+  final int value;
+  final bool enabled;
+  final ValueChanged<int> onChanged;
+
+  const CartoonTargetSlider({
+    super.key,
+    required this.value,
+    required this.onChanged,
+    this.enabled = true,
+  });
+
+  static int clampTarget(int v) =>
+      (v / step).round().clamp(1, stepCount) * step;
+
+  @override
+  Widget build(BuildContext context) {
+    final current = clampTarget(value);
+    final index = (current / step).round() - 1;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            const CartoonIcon(
+              Icons.flag_rounded,
+              color: teal,
+              size: 26,
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                tr('Race finish line'),
+                style: const TextStyle(
+                  color: ink,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+            ),
+            Text(
+              '$current',
+              style: const TextStyle(
+                color: teal,
+                fontSize: 20,
+                fontWeight: FontWeight.w900,
+              ),
+            ),
+            const SizedBox(width: 4),
+            Text(
+              tr('steps'),
+              style: const TextStyle(
+                color: ink,
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        LayoutBuilder(
+          builder: (context, box) {
+            // Keep the first and last notches inside the rounded track.
+            const inset = 14.0;
+            final usable = (box.maxWidth - inset * 2).clamp(1.0, double.infinity);
+            double offsetFor(int i) => inset + usable * (i / (stepCount - 1));
+
+            void pickFrom(double dx) {
+              final i = (((dx - inset) / usable) * (stepCount - 1))
+                  .round()
+                  .clamp(0, stepCount - 1);
+              final next = (i + 1) * step;
+              if (next != current) onChanged(next);
+            }
+
+            return SizedBox(
+              height: 46,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  // Track.
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    top: 14,
+                    child: Container(
+                      height: 18,
+                      decoration: BoxDecoration(
+                        color: const Color(0xffe6efe9),
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: const Color(0xff2b2b2b),
+                          width: 3,
+                        ),
+                      ),
+                    ),
+                  ),
+                  // Bright green active fill.
+                  Positioned(
+                    left: 0,
+                    top: 14,
+                    width: offsetFor(index),
+                    child: Container(
+                      height: 18,
+                      decoration: BoxDecoration(
+                        color: const Color(0xff43c95a),
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                  ),
+                  // Ten step notches.
+                  for (var i = 0; i < stepCount; i++)
+                    Positioned(
+                      left: offsetFor(i) - 5,
+                      top: 12,
+                      child: Container(
+                        width: 10,
+                        height: 22,
+                        decoration: BoxDecoration(
+                          color: i <= index
+                              ? const Color(0xffffffff)
+                              : const Color(0xffb9cdc4),
+                          borderRadius: BorderRadius.circular(5),
+                          border: Border.all(
+                            color: const Color(0xff2b2b2b),
+                            width: 2,
+                          ),
+                        ),
+                      ),
+                    ),
+                  // Chunky yellow knob.
+                  Positioned(
+                    left: offsetFor(index) - 15,
+                    top: 2,
+                    child: Container(
+                      width: 30,
+                      height: 30,
+                      decoration: BoxDecoration(
+                        color: const Color(0xffffd23f),
+                        shape: BoxShape.circle,
+                        border: Border.all(
+                          color: const Color(0xff2b2b2b),
+                          width: 4,
+                        ),
+                        boxShadow: const [
+                          BoxShadow(
+                            color: Color(0x33000000),
+                            blurRadius: 0,
+                            offset: Offset(2, 3),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  // Invisible full-height hit area so the whole strip is
+                  // draggable, not just the knob.
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    top: 0,
+                    bottom: 0,
+                    child: GestureDetector(
+                      behavior: HitTestBehavior.opaque,
+                      onTapDown: enabled
+                          ? (d) => pickFrom(d.localPosition.dx)
+                          : null,
+                      onHorizontalDragUpdate: enabled
+                          ? (d) => pickFrom(d.localPosition.dx)
+                          : null,
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        ),
+      ],
     );
   }
 }

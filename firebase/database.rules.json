@@ -117,6 +117,75 @@
       }
     },
 
+    "matchmaking_queue": {
+      ".read": "auth != null",
+      ".write": "auth != null",
+      "waiting": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        "$uid": {
+          ".write": "auth != null",
+          ".validate": "newData.hasChildren(['requestId','name','mode','target','createdAt','deadline','status'])",
+          "requestId": {
+            ".validate": "newData.isString() && newData.val().length >= 16 && newData.val().length <= 80"
+          },
+          "name": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 16"
+          },
+          "mode": {
+            ".validate": "newData.val() === 'race' || newData.val() === 'arcade'"
+          },
+          "target": {
+            ".validate": "newData.isNumber() && newData.val() >= 100 && newData.val() <= 1000"
+          },
+          "character": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 32"
+          },
+          "createdAt": {
+            ".validate": "newData.isNumber()"
+          },
+          "deadline": {
+            ".validate": "newData.isNumber()"
+          },
+          "status": {
+            ".validate": "newData.val() === 'waiting'"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      },
+      "paired": {
+        ".read": "auth != null",
+        ".write": "auth != null",
+        "$uid": {
+          ".write": "auth != null",
+          ".validate": "newData.hasChildren(['peer','status','roomId'])",
+          "peer": {
+            ".validate": "newData.isString() && newData.val() !== $uid && newData.val().length > 0 && newData.val().length <= 128"
+          },
+          "peerName": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 16"
+          },
+          "peerCharacter": {
+            ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 32"
+          },
+          "status": {
+            ".validate": "newData.val() === 'pending' || newData.val() === 'ready' || newData.val() === 'cancelled'"
+          },
+          "roomId": {
+            ".validate": "newData.isString() && newData.val().length <= 6"
+          },
+          "at": {
+            ".validate": "newData.isNumber()"
+          },
+          "$other": {
+            ".validate": false
+          }
+        }
+      }
+    },
+
     "matchQueue": {
       ".read": "auth != null",
       ".write": "auth != null",

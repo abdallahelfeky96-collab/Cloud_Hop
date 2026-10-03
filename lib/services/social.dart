@@ -1,4 +1,8 @@
-import 'package:cloud_firestore/cloud_firestore.dart';
+import 'dart:math';
+
+// `Transaction` below always means the Realtime Database one used by
+// `runTransaction`; Firestore's identically named class is not used here.
+import 'package:cloud_firestore/cloud_firestore.dart' hide Transaction;
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_database/firebase_database.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -26,10 +30,10 @@ class OnlineServiceFailure implements Exception {
 
   @override
   String toString() =>
-      '$action · $code · ${AppConfig.effectiveProject}/${AppConfig.functionsRegion}: $detail';
+      '$action Â· $code Â· ${AppConfig.effectiveProject}/${AppConfig.functionsRegion}: $detail';
 }
 
-/// User-facing text for online failures. Never leaks raw `action · code ·
+/// User-facing text for online failures. Never leaks raw `action Â· code Â·
 /// project/region` diagnostics into toasts or inline errors; those stay in
 /// debug logs and the copyable connection-details field.
 String friendlyOnlineError(Object e) {
@@ -39,7 +43,7 @@ String friendlyOnlineError(Object e) {
       text.contains('not-found')) {
     return 'Online service is not configured yet.';
   }
-  return text.length > 140 ? '${text.substring(0, 140)}…' : text;
+  return text.length > 140 ? '${text.substring(0, 140)}â€¦' : text;
 }
 
 enum ControlMode { swipe, joystick }
@@ -85,6 +89,29 @@ class PlayerSettings {
   }
 }
 
+/// A resolved matchmaking pairing, including the room id that the atomic
+/// queue transaction minted and committed to both players' records.
+class MatchPair {
+  /// The opponent's uid.
+  final String id;
+
+  /// The opponent's display name.
+  final String name;
+
+  /// The opponent's picked character.
+  final String character;
+
+  /// The single room both players are committed to.
+  final String roomId;
+
+  const MatchPair({
+    required this.id,
+    required this.name,
+    required this.character,
+    required this.roomId,
+  });
+}
+
 /// 100% client-side social backend over Realtime Database (+ Firestore
 /// display names). No Cloud Functions are used anywhere.
 class SocialService {
@@ -95,8 +122,10 @@ class SocialService {
 
   /// Global matchmaking window: a queue node stays claimable for this long,
   /// and it is also the search deadline before a practice bot takes over.
-  /// Kept in one place so the queue, the scan and the bot fallback agree.
-  static const matchWindowMs = 8000;
+  /// Kept in one place so the queue, the claim and the bot fallback agree.
+  /// The product requirement is a strict 10-15s search, so this is the
+  /// midpoint and is guarded by a test.
+  static const matchWindowMs = 12000;
 
   DatabaseReference get _db => FirebaseDatabase.instance.ref();
 
@@ -346,27 +375,60 @@ class SocialService {
     }
   }
 
-  // ---- Direct matchmaking queue (replaces the matchmaking function) ----
-  // The lexicographically smaller uid creates the room; the larger only
-  // polls. This makes double-room creation impossible without transactions.
+  // ---- Global matchmaking queue (RTDB transactions, no Cloud Functions) ----
+  //
+  // Everything lives under ONE node, `matchmaking_queue`, so a single RTDB
+  // transaction can rewrite the whole thing atomically:
+  //
+  //   matchmaking_queue/waiting/{uid}  -> a player currently searching
+  //   matchmaking_queue/paired/{uid}   -> a player's resolved pairing
+  //
+  // [matchTryPair] runs `runTransaction` on that root and, inside the
+  // transaction, picks an opponent, mints the shared room id, erases BOTH
+  // waiting entries and writes BOTH paired records. Because it is a single
+  // transaction, RTDB serialises it against every other claim:
+  //
+  //   * A cannot pair with B while C pairs with B. The second transaction
+  //     re-reads the tree, finds B already gone from `waiting`, and retries.
+  //   * A cannot be paired by C while A is pairing B. A is already removed
+  //     from `waiting`, so C can never see it.
+  //   * `roomId` is minted inside the transaction and written to both records
+  //     in the same commit, so a player is never "matched but homeless" and
+  //     can never be assigned a second room.
+  //
+  // The transaction body is pure and synchronous (map copies plus one random
+  // draw), so it stays far below the 50ms budget even on a large queue, and
+  // it never performs I/O inside the handler.
+  //
+  // `onDisconnect().remove()` on the waiting node clears entries the moment a
+  // client dies, so a dead player never stalls the queue.
 
+  /// Joins the global queue. [requestId] tags this search attempt.
   Future<void> matchPublish({
     required String requestId,
     required String mode,
-    required int target,
+    required String target,
     required String name,
     String character = 'male',
+    int targetSteps = 100,
   }) async {
     final uid = _uid();
     final now = DateTime.now().millisecondsSinceEpoch;
     try {
+      // If the app is killed or the network drops, remove the entry right
+      // away instead of leaving a ghost player to be matched into a room that
+      // can never start.
       await _db
-          .child('matchQueue/$uid')
+          .child('matchmaking_queue/waiting/$uid')
+          .onDisconnect()
+          .remove();
+      await _db
+          .child('matchmaking_queue/waiting/$uid')
           .set({
             'requestId': requestId,
             'name': name.trim().isEmpty ? 'Pip' : name.trim(),
             'mode': mode == 'arcade' ? 'arcade' : 'race',
-            'target': target,
+            'target': targetSteps,
             'character': Character.normalize(character),
             'createdAt': now,
             'deadline': now + matchWindowMs,
@@ -399,122 +461,199 @@ class SocialService {
   /// (signed out vs empty queue vs wrong mode) instead of failing silently.
   int lastQueueTotal = 0, lastQueueCompatible = 0;
 
-  /// Finds a live, compatible waiting opponent in the queue, if any.
-  /// Deterministic smallest id first so both sides agree silently.
-  Future<Map<String, String>?> matchScan() async {
+  /// Atomically claims one live, compatible opponent, or returns null when
+  /// nobody is available. The commit is the single source of truth: it erases
+  /// both queue entries and writes both pairing records with the same
+  /// `roomId`.
+  Future<MatchPair?> matchTryPair({
+    required String mode,
+    required int target,
+    required String name,
+    required String character,
+  }) async {
     final uid = _uid();
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final mine = <String, dynamic>{
+      'mode': mode == 'arcade' ? 'arcade' : 'race',
+      'target': target,
+      'character': Character.normalize(character),
+      'name': name,
+    };
+    MatchPair? paired;
     try {
-      final snap = await _db.child('matchQueue').get().timeout(_timeout);
-      final all = snap.value as Map? ?? {};
-      final mine = _asNode(all[uid]);
-      if (mine == null) return null;
-      final now = DateTime.now().millisecondsSinceEpoch;
-      var total = 0, compatible = 0;
-      for (final entry in all.entries) {
-        if (entry.key.toString() == uid) continue;
-        final other = _asNode(entry.value);
-        if (other == null) continue;
-        if (((other['deadline'] as num?) ?? 0).toInt() <= now) continue;
-        total++;
-        if (_compatible(mine, other)) compatible++;
-      }
-      lastQueueTotal = total;
-      lastQueueCompatible = compatible;
-      return _scanBest(all, uid, mine, now);
+      await _db.child('matchmaking_queue').runTransaction((current) {
+        paired = null;
+        final tree = _asNode(current) ?? const <String, dynamic>{};
+        final waiting = _asNode(tree['waiting']) ?? const <String, dynamic>{};
+        final pairedNodes =
+            _asNode(tree['paired']) ?? const <String, dynamic>{};
+
+        // We must be queued ourselves and must not already hold a live room.
+        final myEntry = _asNode(waiting[uid]);
+        final myPair = _asNode(pairedNodes[uid]);
+        if (myEntry == null) return Transaction.abort();
+        if (myPair != null && myPair['status'] == 'ready') {
+          return Transaction.abort();
+        }
+
+        // Diagnostics and candidate selection from the same snapshot.
+        var total = 0, compatible = 0;
+        final candidates = <String>[];
+        for (final entry in waiting.entries) {
+          final id = entry.key.toString();
+          if (id == uid) continue;
+          final other = _asNode(entry.value);
+          if (other == null) continue;
+          if (((other['deadline'] as num?) ?? 0).toInt() <= now) continue;
+          total++;
+          if (!_compatible(mine, other)) continue;
+          compatible++;
+          candidates.add(id);
+        }
+        lastQueueTotal = total;
+        lastQueueCompatible = compatible;
+        if (candidates.isEmpty) return Transaction.abort();
+        // Smallest id first keeps every client converging on the same order.
+        candidates.sort();
+        final peerId = candidates.first;
+        final peer = _asNode(waiting[peerId]);
+        if (peer == null) return Transaction.abort();
+        final peerName = (peer['name'] ?? 'Player').toString();
+        final peerCharacter = Character.normalize(peer['character']?.toString());
+
+        // One room id, minted here, committed to both records below.
+        final roomId = Random()
+            .nextInt(0xffffff)
+            .toRadixString(16)
+            .padLeft(6, '0')
+            .toUpperCase();
+
+        final nextWaiting = Map<String, dynamic>.from(waiting)
+          ..remove(uid)
+          ..remove(peerId);
+        final nextPaired = Map<String, dynamic>.from(pairedNodes)
+          ..[uid] = {
+            'peer': peerId,
+            'peerName': peerName,
+            'peerCharacter': peerCharacter,
+            'status': 'pending',
+            'roomId': roomId,
+            'at': ServerValue.timestamp,
+          }
+          ..[peerId] = {
+            'peer': uid,
+            'peerName': name.trim().isEmpty ? 'Pip' : name.trim(),
+            'peerCharacter': Character.normalize(character),
+            'status': 'pending',
+            'roomId': roomId,
+            'at': ServerValue.timestamp,
+          };
+        paired = MatchPair(
+          id: peerId,
+          name: peerName,
+          character: peerCharacter,
+          roomId: roomId,
+        );
+        return Transaction.success(<String, dynamic>{
+          'waiting': nextWaiting,
+          'paired': nextPaired,
+        });
+      }).timeout(_timeout);
     } catch (e) {
       _fail(e, 'matchmaking');
     }
+    return paired;
   }
 
-  Map<String, String>? _scanBest(
-    Map all,
-    String uid,
-    Map<String, dynamic> mine,
-    int now,
-  ) {
-    Map<String, String>? best;
-    for (final entry in all.entries) {
-      final id = entry.key.toString();
-      if (id == uid) continue;
-      final other = _asNode(entry.value);
-      if (other == null) continue;
-      if (((other['deadline'] as num?) ?? 0).toInt() <= now) continue;
-      if (!_compatible(mine, other)) continue;
-      final name = (other['name'] ?? 'Player').toString();
-      // Carry the opponent's chosen character so the room can draw every
-      // racer as themselves.
-      final character = (other['character'] ?? 'male').toString();
-      if (best == null || id.compareTo(best['id']!) < 0)
-        best = {'id': id, 'name': name, 'character': character};
-    }
-    return best;
-  }
-
-  /// Marks my queue node matched (called by the room creator).
-  Future<void> matchClaimMine({
-    required String code,
+  /// Flips both pairing records to `ready` once the room node exists. The
+  /// `roomId` was already committed by [matchTryPair], so this only opens the
+  /// gate the joiner waits on. Guarded by a transaction, so the two sides can
+  /// never disagree about the room.
+  Future<void> matchAnnounceRoom({
     required String peerId,
-    required String peerName,
-    required String myName,
+    required String roomId,
   }) async {
     final uid = _uid();
     try {
-      await _db
-          .child('matchQueue/$uid')
-          .update({
-            'status': 'matched',
-            'match': {
-              'code': code,
-              'participants': {uid: myName, peerId: peerName},
-            },
-          })
-          .timeout(_timeout);
+      await _db.child('matchmaking_queue/paired').runTransaction(
+        (current) {
+          final paired = _asNode(current);
+          if (paired == null) return Transaction.abort();
+          final mine = _asNode(paired[uid]);
+          final theirs = _asNode(paired[peerId]);
+          if (mine == null || theirs == null) return Transaction.abort();
+          // Only this exact pairing may be stamped, and only once.
+          if (mine['peer'] != peerId || theirs['peer'] != uid) {
+            return Transaction.abort();
+          }
+          if (mine['roomId'] != roomId || theirs['roomId'] != roomId) {
+            return Transaction.abort();
+          }
+          if (mine['status'] == 'ready') return Transaction.abort();
+          return Transaction.success(Map<String, dynamic>.from(paired)
+            ..[uid] = {...mine, 'status': 'ready'}
+            ..[peerId] = {...theirs, 'status': 'ready'});
+        },
+      ).timeout(_timeout);
       // Background delivery is handled by the self-hosted relay watching
-      // matched queue nodes (tools/fcm-relay-v1.js).
+      // ready pairings (tools/fcm-relay-v1.js).
     } catch (e) {
       _fail(e, 'matchmaking');
     }
   }
 
-  /// Returns `{status, code?}`: own node first, then anyone matched with me.
-  Future<Map<String, dynamic>> matchPoll() async {
+  /// My current pairing record, or `{status: waiting}` when not paired.
+  Future<Map<String, dynamic>> matchPairing() async {
     final uid = _uid();
     try {
-      final snap = await _db.child('matchQueue').get().timeout(_timeout);
-      final all = snap.value as Map? ?? {};
-      final mine = _asNode(all[uid]);
-      if (mine != null && mine['status'] == 'matched') {
-        final match = _asNode(mine['match']);
-        if (match != null && (match['code'] ?? '').toString().isNotEmpty) {
-          return {'status': 'matched', 'code': match['code'].toString()};
-        }
-      }
-      for (final entry in all.entries) {
-        final node = _asNode(entry.value);
-        if (node == null ||
-            node['status'] != 'matched' ||
-            mine == null ||
-            ((node['createdAt'] as num?) ?? 0) <
-                ((mine['createdAt'] as num?) ?? 0) - matchWindowMs)
-          continue;
-        final match = _asNode(node['match']);
-        final participants = _asNode(match?['participants']);
-        if (match != null &&
-            participants != null &&
-            participants.containsKey(uid)) {
-          return {'status': 'matched', 'code': match['code'].toString()};
-        }
-      }
-      return {'status': mine?['status']?.toString() ?? 'waiting'};
+      final snap = await _db
+          .child('matchmaking_queue/paired/$uid')
+          .get()
+          .timeout(_timeout);
+      return _asNode(snap.value) ?? const {'status': 'waiting'};
     } catch (e) {
       _fail(e, 'matchmaking');
     }
   }
 
+  /// Clears this pairing when the room could not be created, so the other
+  /// player is released instead of waiting out the whole search window.
+  Future<void> matchCancelPair({required String peerId}) async {
+    final uid = _uid();
+    try {
+      await _db.child('matchmaking_queue/paired').runTransaction(
+        (current) {
+          final paired = _asNode(current);
+          if (paired == null) return Transaction.abort();
+          final mine = _asNode(paired[uid]);
+          final theirs = _asNode(paired[peerId]);
+          if (mine == null || theirs == null) return Transaction.abort();
+          // Release both ends of the same pairing, and only that pairing.
+          if (mine['peer'] != peerId || theirs['peer'] != uid) {
+            return Transaction.abort();
+          }
+          return Transaction.success(Map<String, dynamic>.from(paired)
+            ..[uid] = {...mine, 'status': 'cancelled', 'roomId': ''}
+            ..[peerId] = {...theirs, 'status': 'cancelled', 'roomId': ''});
+        },
+      ).timeout(_timeout);
+    } catch (e) {
+      _fail(e, 'matchmaking');
+    }
+  }
+
+  /// Leaves the queue and drops any pending pairing.
   Future<void> matchCancel() async {
     final uid = _uid();
     try {
-      await _db.child('matchQueue/$uid').remove().timeout(_timeout);
+      await _db
+          .child('matchmaking_queue/waiting/$uid')
+          .onDisconnect()
+          .cancel();
+      await _db.update({
+        'matchmaking_queue/waiting/$uid': null,
+        'matchmaking_queue/paired/$uid': null,
+      }).timeout(_timeout);
     } catch (e) {
       _fail(e, 'matchmaking');
     }

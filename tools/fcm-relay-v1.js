@@ -181,25 +181,29 @@ function watchAcceptances() {
 }
 
 // 4. مراقبة المباريات
+// The atomic matchmaking transaction writes one `paired` record per player
+// and flips both to `ready` in a single transaction once the room exists, so
+// watching `child_changed` on `matchmaking_queue/paired` fires exactly once
+// per player per match. A `pending` record already carries the roomId; the
+// notification is deliberately sent on `ready` so a push never arrives for a
+// room that failed to build.
 function watchMatches() {
-  db.ref('matchQueue').on('child_changed', (snap) => {
+  db.ref('matchmaking_queue/paired').on('child_changed', (snap) => {
     const node = snap.val() || {};
-    if (node.status !== 'matched' || !node.match) return;
-    const parts = node.match.participants || {};
-    for (const [pid] of Object.entries(parts)) {
-      if (pid === snap.key) continue;
+    if (node.status !== 'ready' || !node.roomId) return;
 
-      const k = key('match', node.match.code, pid);
-      const now = Date.now();
-      if (seenMap.has(k) && now - seenMap.get(k) < COOLDOWN_MS) continue;
+    const k = key('match', node.roomId, snap.key);
+    const now = Date.now();
+    if (seenMap.has(k) && now - seenMap.get(k) < COOLDOWN_MS) return;
+    seenMap.set(k, now);
 
-      seenMap.set(k, now);
-
-      sendTo(pid, 'Challenger found!', `Room ${node.match.code} is starting`, {
-        kind: 'match',
-        code: node.match.code,
-      });
-    }
+    // One push per player: each side's own record flips to `ready` exactly
+    // once, and the cooldown key is scoped to that player and room.
+    sendTo(snap.key, 'Challenger found!', `Room ${node.roomId} is starting`, {
+      kind: 'match',
+      code: node.roomId,
+      peerName: node.peerName || 'Someone',
+    });
   });
 }
 

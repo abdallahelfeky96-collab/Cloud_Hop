@@ -1002,12 +1002,14 @@ class _PlayScreenState extends State<PlayScreen>
     if (id != null && widget.store.cloud) {
       unawaited(() async {
         try {
-          final poll = await social.matchPoll();
+          // Read the pairing before wiping it: a match that already committed
+          // must be left explicitly so the other racer sees the disconnect.
+          final pairing = await social.matchPairing();
+          final roomId = (pairing['roomId'] ?? '').toString();
           await social.matchCancel();
-          // A committed match is left explicitly, so the other racer sees a disconnect.
-          if (poll['status'] == 'matched') {
+          if (pairing['status'] == 'ready' && roomId.isNotEmpty) {
             final abandoned = RaceService(widget.store);
-            await abandoned.attachMatch(poll['code'] as String);
+            await abandoned.attachMatch(roomId);
             await abandoned.leave();
             abandoned.dispose();
           }
@@ -1018,6 +1020,25 @@ class _PlayScreenState extends State<PlayScreen>
     }
   }
 
+  /// Attaches to a room the atomic pairing already committed us to.
+  ///
+  /// The pairing record can be readable a few hundred milliseconds before the
+  /// claimer's room write lands, so a single `attachMatch` can race it. A
+  /// short, bounded retry keeps the transition instant in practice without
+  /// stranding the player in a pairing that silently fails.
+  Future<bool> attachJoinedRoom(String code) async {
+    for (var attempt = 0; attempt < 8; attempt++) {
+      try {
+        await race.attachMatch(code);
+        return true;
+      } catch (e) {
+        debugPrint('Attach $code attempt ${attempt + 1} failed: $e');
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+    }
+    return false;
+  }
+
   Future<void> findMatch() async {
     final generation = ++searchGeneration;
     searching = true;
@@ -1025,9 +1046,10 @@ class _PlayScreenState extends State<PlayScreen>
     final id =
         '${DateTime.now().microsecondsSinceEpoch}-${math.Random.secure().nextInt(0x7fffffff)}';
     searchId = id;
-    // Global queue search: the RTDB matchQueue holds every online player
-    // worldwide (no LAN or subnet filtering), so a real human can be found
-    // from any network. Only when the window expires do we fall back to a bot.
+    // Global queue search: the RTDB `matchmaking_queue` holds every online
+    // player worldwide (no LAN or subnet filtering), so a real human can be
+    // found from any network. The window is strict: if it expires with nobody
+    // available we leave the queue and take a bot, never before.
     final window = const Duration(
       milliseconds: SocialService.matchWindowMs,
     );
@@ -1037,7 +1059,9 @@ class _PlayScreenState extends State<PlayScreen>
       unawaited(cancelSearch());
       startBot();
     });
-    Map<String, dynamic> match = {'status': 'waiting'};
+    var matched = false;
+    var createdRoom = false;
+    String? roomId;
     try {
       if (!widget.store.cloud) await widget.store.retryCloud();
       if (generation != searchGeneration || !mounted) return;
@@ -1048,93 +1072,117 @@ class _PlayScreenState extends State<PlayScreen>
         // nobody". The status carries the underlying reason.
         toast('Offline (${widget.store.status}). Playing practice rival.');
       }
-      // Direct client matchmaking: publish, then the smaller uid creates.
-      var createdRoom = false;
-      Future<void> tryCreate() async {
-        final opp = await social.matchScan();
-        final myUid = widget.store.uidOrNull;
-        if (opp == null || myUid == null || myUid.compareTo(opp['id']!) >= 0) {
-          return;
-        }
-        final mode = settings.choice == GameChoice.arcade ? 'arcade' : 'race';
-        final code = await race.createMatchRoom(
-          participants: {myUid: settings.name, opp['id']!: opp['name']!},
+      final mode = settings.choice == GameChoice.arcade ? 'arcade' : 'race';
+
+      // Claims an opponent and mints the shared room id in one RTDB
+      // transaction, then builds that exact room. Nothing waits on a second
+      // lookup, so the transition below is immediate.
+      Future<bool> tryClaim() async {
+        final pair = await social.matchTryPair(
           mode: mode,
           target: settings.raceTarget,
-          characters: {
-            myUid: settings.character,
-            opp['id']!: Character.normalize(opp['character']),
-          },
-          skin: progress.skin,
+          name: settings.name,
           character: settings.character,
         );
-        await social.matchClaimMine(
-          code: code,
-          peerId: opp['id']!,
-          peerName: opp['name']!,
-          myName: settings.name,
-        );
-        createdRoom = true;
-        match = {'status': 'matched', 'code': code};
-        searchTimer?.cancel();
-        // Auto-start together (the old server did this): let the joiner
-        // attach, then start for both sides. Abort cleanly if cancelled.
-        for (var i = 0; i < 10; i++) {
-          await Future<void>.delayed(const Duration(milliseconds: 500));
-          if (generation != searchGeneration || !mounted) {
-            await race.leave();
-            createdRoom = false;
-            match = {'status': 'waiting'};
-            return;
-          }
-        }
+        if (pair == null) return false;
+        final myUid = widget.store.uidOrNull;
+        if (myUid == null) return false;
         try {
-          await race.start();
+          final code = await race.createMatchRoom(
+            participants: {myUid: settings.name, pair.id: pair.name},
+            mode: mode,
+            target: settings.raceTarget,
+            characters: {
+              myUid: settings.character,
+              pair.id: pair.character,
+            },
+            skin: progress.skin,
+            character: settings.character,
+            reservedCode: pair.roomId,
+          );
+          await social.matchAnnounceRoom(peerId: pair.id, roomId: code);
+          roomId = code;
+          createdRoom = true;
+          return true;
         } catch (e) {
-          debugPrint('Auto-start failed: $e');
+          debugPrint('Room create failed: $e');
+          // Release the opponent instead of stranding them in a pairing that
+          // will never start, and keep searching.
+          await social.matchCancelPair(peerId: pair.id);
           await race.leave();
-          createdRoom = false;
-          match = {'status': 'waiting'};
+          roomId = null;
+          return false;
         }
       }
 
       if (widget.store.cloud) {
         await social.matchPublish(
           requestId: id,
-          mode: settings.choice == GameChoice.arcade ? 'arcade' : 'race',
-          target: settings.raceTarget,
+          mode: mode,
+          target: mode,
           name: settings.name,
           character: settings.character,
+          targetSteps: settings.raceTarget,
         );
-        await tryCreate();
+        matched = await tryClaim();
+        if (matched) searchTimer?.cancel();
       }
       while (generation == searchGeneration &&
-          match['status'] == 'waiting' &&
+          !matched &&
           DateTime.now().isBefore(deadline)) {
-        await Future<void>.delayed(const Duration(milliseconds: 350));
+        await Future<void>.delayed(const Duration(milliseconds: 250));
         if (widget.store.cloud) {
-          final poll = await social.matchPoll();
-          if (poll['status'] == 'matched') {
-            match = poll;
+          // Somebody may have claimed us. The room id is committed with the
+          // pairing, but the room node itself is created a moment later, so we
+          // act on `ready`, which is stamped only once the room exists.
+          final pairing = await social.matchPairing();
+          final peerRoom = (pairing['roomId'] ?? '').toString();
+          if (pairing['status'] == 'ready' && peerRoom.isNotEmpty) {
+            roomId = peerRoom;
+            matched = true;
+            searchTimer?.cancel();
             break;
           }
-          await tryCreate();
+          if (pairing['status'] == 'cancelled') {
+            // The claimer failed to build a room: re-queue and keep looking.
+            await social.matchCancel();
+            await social.matchPublish(
+              requestId: id,
+              mode: mode,
+              target: mode,
+              name: settings.name,
+              character: settings.character,
+              targetSteps: settings.raceTarget,
+            );
+          }
+          matched = await tryClaim();
+          if (matched) searchTimer?.cancel();
         }
       }
       if (generation != searchGeneration || !mounted) return;
-      if (widget.store.cloud && match['status'] == 'waiting') {
+      if (!matched && widget.store.cloud) {
+        // Window expired with zero humans: leave the queue, then take a bot.
         await social.matchCancel();
       }
       if (generation != searchGeneration || !mounted) return;
       searchTimer?.cancel();
       searching = false;
       searchId = null;
-      if (match['status'] == 'matched') {
-        // The creator already watches its room; joiners attach here.
+      if (matched) {
+        // No buffering: the room id was committed with the pairing, so the
+        // joiner can attach and the countdown can start right away.
         if (!createdRoom) {
-          await race.attachMatch(match['code'] as String);
+          final pairing = await social.matchPairing();
+          final joinRoom = (pairing['roomId'] ?? roomId ?? '').toString();
+          matched = joinRoom.isNotEmpty && await attachJoinedRoom(joinRoom);
         }
-        toast(tr('Challenger found. Starting together…'));
+      }
+      if (generation != searchGeneration || !mounted) return;
+      if (matched) {
+        unawaited(race.start().catchError((Object e) {
+          debugPrint('Auto-start failed: $e');
+        }));
+        showMatchFoundBanner();
       } else {
         debugPrint(
           'Matchmaking unpaired: mode=${settings.choice} '
@@ -1603,6 +1651,36 @@ class _PlayScreenState extends State<PlayScreen>
         behavior: SnackBarBehavior.floating,
         duration: const Duration(seconds: 3),
       ),
+    );
+  }
+
+  /// Bright cartoon "match found" banner shown the instant a human pairing
+  /// completes. Non-blocking and short-lived on purpose: it must never delay
+  /// the transition into the room, so it fades itself out while gameplay is
+  /// already running. No extra cue here - the round-start jingle already plays
+  /// when the countdown ends, and `challenge_voice` belongs to search start.
+  void showMatchFoundBanner() {
+    if (!mounted) return;
+    unawaited(
+      showGeneralDialog<void>(
+        context: context,
+        barrierDismissible: false,
+        barrierColor: Colors.transparent,
+        barrierLabel: tr('Match found!'),
+        transitionDuration: const Duration(milliseconds: 180),
+        pageBuilder: (_, _, _) => const MatchFoundBanner(),
+        transitionBuilder: (_, anim, _, child) => FadeTransition(
+          opacity: anim,
+          child: ScaleTransition(
+            scale: Tween(begin: .7, end: 1.0).animate(
+              CurvedAnimation(parent: anim, curve: Curves.easeOutBack),
+            ),
+            child: child,
+          ),
+        ),
+      ).then((_) {
+        if (mounted) setState(() {});
+      }),
     );
   }
 
